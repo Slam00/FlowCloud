@@ -1,0 +1,18 @@
+<resources>
+    <style name="Theme.ByeDPI" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/flow_primary</item>
+        <item name="colorPrimaryVariant">@color/flow_primary_dark</item>
+        <item name="colorOnPrimary">@color/white</item>
+        <item name="colorSecondary">@color/flow_primary</item>
+        <item name="colorSecondaryVariant">@color/flow_primary_dark</item>
+        <item name="colorOnSecondary">@color/white</item>
+        <item name="android:statusBarColor">@color/flow_background</item>
+        <item name="android:navigationBarColor">@color/flow_surface</item>
+    </style>
+    <style name="Theme.ByeDPI.Settings" parent="Theme.MaterialComponents.DayNight.DarkActionBar">
+        <item name="colorPrimary">@color/flow_primary</item>
+        <item name="colorPrimaryVariant">@color/flow_primary_dark</item>
+        <item name="colorOnPrimary">@color/white</item>
+        <item name="colorSecondary">@color/flow_primary</item>
+    </style>
+</resources>

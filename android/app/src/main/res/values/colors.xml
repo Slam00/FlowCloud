@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+    <color name="flow_primary">#1769E0</color>
+    <color name="flow_primary_dark">#0D47B8</color>
+    <color name="flow_background">#F5F7FC</color>
+    <color name="flow_surface">#FFFFFFFF</color>
+    <color name="flow_surface_alt">#EAF0FF</color>
+    <color name="flow_text_secondary">#5E6472</color>
+    <color name="flow_connected">#22A06B</color>
+    <color name="flow_disconnected">#8B93A7</color>
+</resources>

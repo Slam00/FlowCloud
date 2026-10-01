@@ -1,0 +1,26 @@
+# Local tools, IDE settings, diagnostics, and distributables
+.reference/
+.toolchains/
+.idea/
+artifacts/
+dist/
+.tmp-*
+android/*.png
+
+# Android and native build outputs
+**/.gradle/
+**/build/
+**/.cxx/
+**/.externalNativeBuild/
+**/local.properties
+**/captures/
+**/*.iml
+android/**/.git.upstream
+android/app/src/main/jniLibs/
+
+# Signing material and packages belong outside the source repository
+*.apk
+*.aab
+*.jks
+*.keystore
+.DS_Store

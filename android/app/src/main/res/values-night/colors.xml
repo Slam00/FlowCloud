@@ -1,0 +1,10 @@
+<resources>
+    <color name="flow_primary">#769BFF</color>
+    <color name="flow_primary_dark">#416CD8</color>
+    <color name="flow_background">#080A0F</color>
+    <color name="flow_surface">#12151C</color>
+    <color name="flow_surface_alt">#252A35</color>
+    <color name="flow_text_secondary">#A7ADBA</color>
+    <color name="flow_connected">#58D8B2</color>
+    <color name="flow_disconnected">#858C9A</color>
+</resources>
