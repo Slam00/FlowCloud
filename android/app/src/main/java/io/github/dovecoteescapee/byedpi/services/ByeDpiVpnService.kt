@@ -29,6 +29,7 @@ import io.github.dovecoteescapee.byedpi.core.ByeDpiProxyPreferences
 import io.github.dovecoteescapee.byedpi.core.DnsOverHttpsProxy
 import io.github.dovecoteescapee.byedpi.core.DiagnosticsRepository
 import io.github.dovecoteescapee.byedpi.core.TProxyService
+import io.github.dovecoteescapee.byedpi.core.TransportHealthProbe
 import io.github.dovecoteescapee.byedpi.core.WarpRegistrationRepository
 import io.github.dovecoteescapee.byedpi.core.SplitTunnelRepository
 import io.github.dovecoteescapee.byedpi.data.*
@@ -66,6 +67,10 @@ class ByeDpiVpnService : LifecycleVpnService() {
     private val mutex = Mutex()
     private var stopping: Boolean = false
     private var selectedTransport = TransportMode.Auto
+    private var healthWatchdogJob: Job? = null
+    private var dnsRelayAddress = ""
+    private var transportSocksPort = 0
+    private var lastWatchdogRestart = 0L
 
     companion object {
         private val TAG: String = ByeDpiVpnService::class.java.simpleName
@@ -75,6 +80,9 @@ class ByeDpiVpnService : LifecycleVpnService() {
         private const val MOBILE_SPLIT_FIX_KEY = "mobile_split_fix_applied_v0210"
         private const val MOBILE_TLS_DESYNC_FIX_KEY = "mobile_tls_desync_fix_applied_v0214"
         private const val NETWORK_SWITCH_SETTLE_MS = 5_000L
+        private const val HEALTH_CHECK_INTERVAL_MS = 30_000L
+        private const val HEALTH_FAILURES_BEFORE_RESTART = 2
+        private const val HEALTH_MIN_RESTART_INTERVAL_MS = 120_000L
         const val EXTRA_TRANSPORT = "transport"
 
         private var status: ServiceStatus = ServiceStatus.Disconnected
@@ -164,6 +172,7 @@ class ByeDpiVpnService : LifecycleVpnService() {
             updateStatus(ServiceStatus.Connected)
             DiagnosticsRepository.append(applicationContext, TAG, "VPN connected")
             startTrafficMonitor()
+            startHealthWatchdog()
             scheduleNetworkRecovery()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start VPN", e)
@@ -199,6 +208,7 @@ class ByeDpiVpnService : LifecycleVpnService() {
             try {
                 withContext(Dispatchers.IO) {
                     stopTrafficMonitor()
+                    stopHealthWatchdog()
                     // Close the SOCKS destination first so active tun2socks sessions
                     // leave their reads before the native worker is joined.
                     runCatching { stopAutoRouter() }
@@ -655,11 +665,80 @@ class ByeDpiVpnService : LifecycleVpnService() {
     private suspend fun startTransport(ipv6: Boolean) {
         startProxy()
         val byeDpiPort = getPreferences().getString("byedpi_proxy_port", null)?.toIntOrNull() ?: 1080
+        var relayAddress = ""
         val port = if (selectedTransport == TransportMode.ByeDpi) byeDpiPort else {
-            val dnsRelayAddress = withContext(Dispatchers.IO) { startDnsRelay(ipv6) }
-            startAutoRouter(byeDpiPort, dnsRelayAddress)
+            relayAddress = withContext(Dispatchers.IO) { startDnsRelay(ipv6) }
+            startAutoRouter(byeDpiPort, relayAddress)
         }
         withContext(Dispatchers.IO) { startTun2Socks(port, ipv6) }
+        dnsRelayAddress = relayAddress
+        transportSocksPort = port
+    }
+
+    /**
+     * Restarts the transport when it is up but stopped passing traffic (dead DoH
+     * connection, stuck router, exhausted ByeDPI slots) while the physical network
+     * itself is validated - the case users fixed by reconnecting manually.
+     */
+    private fun startHealthWatchdog() {
+        healthWatchdogJob?.cancel()
+        healthWatchdogJob = lifecycleScope.launch {
+            var failures = 0
+            while (isActive && desiredRunning) {
+                delay(HEALTH_CHECK_INTERVAL_MS)
+                if (tunFd == null || mutex.isLocked || networkRecoveryJob?.isActive == true ||
+                    !isValidatedNetwork(underlyingNetwork)
+                ) {
+                    failures = 0
+                    continue
+                }
+                val relay = dnsRelayAddress
+                val socksPort = transportSocksPort
+                val problem = withContext(Dispatchers.IO) {
+                    when {
+                        relay.isNotBlank() && !TransportHealthProbe.dnsRelayAnswers(relay) ->
+                            "DNS relay does not answer"
+                        socksPort > 0 && !TransportHealthProbe.socksPassesHttp(socksPort) ->
+                            "no HTTP response through the transport"
+                        else -> null
+                    }
+                }
+                // The transport may have been restarted while the probe was running.
+                if (!desiredRunning || mutex.isLocked || networkRecoveryJob?.isActive == true) continue
+                if (problem == null) {
+                    if (failures > 0) {
+                        DiagnosticsRepository.append(applicationContext, TAG, "Health check recovered")
+                    }
+                    failures = 0
+                    continue
+                }
+                failures++
+                Log.w(TAG, "Health check failed ($failures): $problem")
+                DiagnosticsRepository.append(applicationContext, TAG, "Health check failed ($failures): $problem")
+                if (failures < HEALTH_FAILURES_BEFORE_RESTART) continue
+                val now = SystemClock.elapsedRealtime()
+                if (lastWatchdogRestart != 0L && now - lastWatchdogRestart < HEALTH_MIN_RESTART_INTERVAL_MS) {
+                    continue
+                }
+                lastWatchdogRestart = now
+                failures = 0
+                DiagnosticsRepository.append(applicationContext, TAG, "Watchdog restarting transport: $problem")
+                needsNetworkRecovery = true
+                scheduleNetworkRecovery()
+            }
+        }
+    }
+
+    private fun stopHealthWatchdog() {
+        healthWatchdogJob?.cancel()
+        healthWatchdogJob = null
+    }
+
+    private fun isValidatedNetwork(network: Network?): Boolean {
+        network ?: return false
+        return getSystemService(ConnectivityManager::class.java)
+            .getNetworkCapabilities(network)
+            ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
     }
 
     private suspend fun stopTransportForRecovery() {

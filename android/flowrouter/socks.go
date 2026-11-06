@@ -9,6 +9,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -174,19 +175,60 @@ func relayTCP(left, right net.Conn, initial []byte) {
 			return
 		}
 	}
-	done := make(chan struct{}, 1)
+	var halfClosed atomic.Bool
+	done := make(chan struct{}, 2)
 	go func() {
-		_, _ = io.Copy(right, left)
-		if tcp, ok := right.(*net.TCPConn); ok {
-			_ = tcp.CloseWrite()
-		}
+		copyHalf(right, left, &halfClosed)
 		done <- struct{}{}
 	}()
-	_, _ = io.Copy(left, right)
-	if tcp, ok := left.(*net.TCPConn); ok {
-		_ = tcp.CloseWrite()
-	}
+	go func() {
+		copyHalf(left, right, &halfClosed)
+		done <- struct{}{}
+	}()
 	<-done
+	// One side finished. The other may legitimately keep sending for a while, but a
+	// peer that vanished without FIN/RST (dead WARP session, NAT drop) must not pin
+	// this relay, its goroutines and the ByeDPI connection forever: from now on
+	// every read gets an idle deadline.
+	halfClosed.Store(true)
+	deadline := time.Now().Add(relayHalfCloseIdle)
+	_ = left.SetReadDeadline(deadline)
+	_ = right.SetReadDeadline(deadline)
+	<-done
+}
+
+// relayHalfCloseIdle bounds how long the remaining direction may stay silent
+// after the other direction has been closed.
+var relayHalfCloseIdle = 60 * time.Second
+
+func copyHalf(dst, src net.Conn, halfClosed *atomic.Bool) {
+	buffer := make([]byte, 32*1024)
+	for {
+		if halfClosed.Load() {
+			_ = src.SetReadDeadline(time.Now().Add(relayHalfCloseIdle))
+		}
+		count, err := src.Read(buffer)
+		if count > 0 {
+			if _, writeErr := dst.Write(buffer[:count]); writeErr != nil {
+				break
+			}
+		}
+		if err != nil {
+			break
+		}
+	}
+	closeWrite(dst)
+}
+
+// closeWrite half-closes conn so the peer sees EOF. Besides *net.TCPConn this also
+// covers gVisor netstack connections used for WARP, which previously never sent
+// FIN and left the remote side waiting.
+func closeWrite(conn net.Conn) {
+	if writer, ok := conn.(interface{ CloseWrite() error }); ok {
+		_ = writer.CloseWrite()
+		return
+	}
+	_ = conn.Close()
 }
 
 func readInitialPayload(connection net.Conn) []byte {

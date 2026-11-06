@@ -14,10 +14,14 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.io.InterruptedIOException
 import java.net.SocketException
+import java.net.SocketTimeoutException
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ExecutorCompletionService
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
 class DnsOverHttpsProxy(context: Context) {
@@ -29,6 +33,9 @@ class DnsOverHttpsProxy(context: Context) {
 
     companion object {
         private const val TAG = "DnsOverHttpsProxy"
+        private const val QUERY_THREADS = 8
+        private const val QUERY_QUEUE_CAPACITY = 128
+        private const val STALE_QUERY_MS = 2_500L
         private val DNS_MESSAGE = "application/dns-message".toMediaType()
         private val providers = listOf(
             Provider(
@@ -111,8 +118,15 @@ class DnsOverHttpsProxy(context: Context) {
         .connectTimeout(4, TimeUnit.SECONDS)
         .readTimeout(6, TimeUnit.SECONDS)
         .callTimeout(7, TimeUnit.SECONDS)
+        // HTTP/2 multiplexes every query over one connection per provider. Without
+        // pings a connection silently dropped by NAT/carrier stays "healthy" and
+        // every DNS query through it times out until the VPN is restarted.
+        .pingInterval(10, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
+
+    @Volatile
+    private var lastPoolEvictionNanos = 0L
 
     @Synchronized
     fun start(ipv6Enabled: Boolean): String {
@@ -122,10 +136,16 @@ class DnsOverHttpsProxy(context: Context) {
             reuseAddress = true
             bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0))
         }
-        val queryPool = Executors.newFixedThreadPool(4) { task ->
-            Thread(task, "FlowCloud-DNS-query").apply { isDaemon = true }
-        }
-        val providerPool = Executors.newFixedThreadPool(16) { task ->
+        // Bounded queue that drops the oldest query when full: during a DoH stall the
+        // backlog must not grow without limit, or fresh queries wait behind thousands
+        // of queries whose clients gave up long ago, even after DoH recovers.
+        val queryPool = ThreadPoolExecutor(
+            QUERY_THREADS, QUERY_THREADS, 0L, TimeUnit.MILLISECONDS,
+            ArrayBlockingQueue(QUERY_QUEUE_CAPACITY),
+            { task -> Thread(task, "FlowCloud-DNS-query").apply { isDaemon = true } },
+            ThreadPoolExecutor.DiscardOldestPolicy(),
+        )
+        val providerPool = Executors.newFixedThreadPool(QUERY_THREADS * (providers.size + 1)) { task ->
             Thread(task, "FlowCloud-DNS-provider").apply { isDaemon = true }
         }
         socket = datagramSocket
@@ -172,7 +192,12 @@ class DnsOverHttpsProxy(context: Context) {
             val query = packet.data.copyOfRange(packet.offset, packet.offset + packet.length)
             val clientAddress = packet.address
             val clientPort = packet.port
+            val receivedAt = System.nanoTime()
             executor.execute {
+                // The client (stub resolver) has already retried or given up by now.
+                if (System.nanoTime() - receivedAt > TimeUnit.MILLISECONDS.toNanos(STALE_QUERY_MS)) {
+                    return@execute
+                }
                 val response = resolve(query) ?: return@execute
                 try {
                     activeSocket.send(
@@ -238,7 +263,22 @@ class DnsOverHttpsProxy(context: Context) {
                 }
                 payload
             }
+        }.onFailure { error ->
+            if (isTimeout(error)) evictStaleConnections(provider)
         }.getOrNull()
+    }
+
+    private fun isTimeout(error: Throwable): Boolean =
+        error is SocketTimeoutException ||
+            (error is InterruptedIOException && error.message == "timeout")
+
+    /** A timed-out call usually means a dead pooled connection; drop it so the next query reconnects. */
+    private fun evictStaleConnections(provider: Provider) {
+        val now = System.nanoTime()
+        if (now - lastPoolEvictionNanos < TimeUnit.SECONDS.toNanos(5)) return
+        lastPoolEvictionNanos = now
+        Log.w(TAG, "DoH timeout via ${provider.host}; evicting pooled connections")
+        client.connectionPool.evictAll()
     }
 
     private fun requestViaUnderlyingNetwork(query: ByteArray): ByteArray? {
