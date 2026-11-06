@@ -29,8 +29,9 @@ import (
 
 var bridgeState struct {
 	sync.Mutex
-	router *flowRouter
-	err    string
+	router  *flowRouter
+	err     string
+	options routerOptions
 }
 
 func init() {
@@ -56,6 +57,7 @@ func FlowRouterStart(listenAddress, byeDPIAddress, dnsRelayAddress, warpRulesTex
 		C.GoString(warpRulesText),
 		C.GoString(byeDPIRulesText),
 		C.GoString(warpJSON),
+		bridgeState.options,
 	)
 	if err != nil {
 		bridgeState.err = err.Error()
@@ -69,6 +71,25 @@ func FlowRouterStart(listenAddress, byeDPIAddress, dnsRelayAddress, warpRulesTex
 	bridgeState.router = router
 	bridgeState.err = ""
 	return 0
+}
+
+// setFlowRouterOptions stores options for the next FlowRouterStart. It keeps
+// FlowRouterStart's C signature unchanged for the existing JNI glue.
+func setFlowRouterOptions(optionsJSON string) int {
+	options, err := parseRouterOptions(optionsJSON)
+	bridgeState.Lock()
+	defer bridgeState.Unlock()
+	if err != nil {
+		bridgeState.err = err.Error()
+		return -1
+	}
+	bridgeState.options = options
+	return 0
+}
+
+//export FlowRouterSetOptions
+func FlowRouterSetOptions(optionsJSON *C.char) C.int {
+	return C.int(setFlowRouterOptions(C.GoString(optionsJSON)))
 }
 
 //export FlowRouterStop

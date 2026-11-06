@@ -7,12 +7,15 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.fragment.app.FragmentManager
 import io.github.dovecoteescapee.byedpi.R
 import io.github.dovecoteescapee.byedpi.fragments.MainSettingsFragment
+import io.github.dovecoteescapee.byedpi.utility.applySystemBarAppearance
 import io.github.dovecoteescapee.byedpi.utility.getPreferences
 
 class SettingsActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_settings)
+        setSupportActionBar(findViewById(R.id.toolbar))
+        applySystemBarAppearance()
 
         supportFragmentManager
             .beginTransaction()

@@ -20,6 +20,10 @@ type flowRouter struct {
 	byeDPIRules   domainRules
 	dns           *dnsCache
 	warpConfig    warpConfig
+	options       routerOptions
+	routes        *routeCache
+	timings       autoTimings
+	dial          routeDialer
 
 	context context.Context
 	cancel  context.CancelFunc
@@ -36,7 +40,7 @@ type flowRouter struct {
 
 const warpRetryInterval = 30 * time.Second
 
-func newFlowRouter(listenAddress, byeDPIAddress, dnsRelayAddress, warpRulesText, byeDPIRulesText, warpJSON string) (*flowRouter, error) {
+func newFlowRouter(listenAddress, byeDPIAddress, dnsRelayAddress, warpRulesText, byeDPIRulesText, warpJSON string, options routerOptions) (*flowRouter, error) {
 	if _, err := net.ResolveTCPAddr("tcp", listenAddress); err != nil {
 		return nil, fmt.Errorf("invalid router address: %w", err)
 	}
@@ -56,7 +60,11 @@ func newFlowRouter(listenAddress, byeDPIAddress, dnsRelayAddress, warpRulesText,
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &flowRouter{
+	var routes *routeCache
+	if options.AutoFallback {
+		routes = newRouteCache(options.StateFile, time.Duration(options.LearnTTLSeconds)*time.Second)
+	}
+	router := &flowRouter{
 		listenAddress: listenAddress,
 		byeDPIAddress: byeDPIAddress,
 		dnsRelay:      dnsRelay,
@@ -64,9 +72,14 @@ func newFlowRouter(listenAddress, byeDPIAddress, dnsRelayAddress, warpRulesText,
 		byeDPIRules:   parseDomainRules(byeDPIRulesText),
 		dns:           newDNSCache(),
 		warpConfig:    config,
+		options:       options,
+		routes:        routes,
+		timings:       defaultAutoTimings,
 		context:       ctx,
 		cancel:        cancel,
-	}, nil
+	}
+	router.dial = router.dialRouteDefault
+	return router, nil
 }
 
 func (r *flowRouter) exchangeDNSViaRelay(query []byte) ([]byte, error) {
@@ -139,6 +152,9 @@ func (r *flowRouter) start() error {
 		"Router started: WARP domains=%d, WARP networks=%d, ByeDPI domains=%d, ByeDPI networks=%d",
 		len(r.warpRules.rules), len(r.warpRules.prefixes), len(r.byeDPIRules.rules), len(r.byeDPIRules.prefixes),
 	)
+	if r.routes != nil {
+		flowRouterLogf("Auto fallback enabled: learned routes=%d, ttl=%s", r.routes.size(), r.routes.ttl)
+	}
 	if r.warpRules.all && !r.warpConfig.available() {
 		_ = listener.Close()
 		return errors.New("WARP mode requires a registered WARP profile")
@@ -211,6 +227,9 @@ func (r *flowRouter) close() {
 		case <-warpClosed:
 		case <-time.After(2 * time.Second):
 		}
+		if r.routes != nil {
+			r.routes.close()
+		}
 	})
 	finished := make(chan struct{})
 	go func() {
@@ -266,49 +285,76 @@ func (r *flowRouter) handleConnect(client net.Conn, target socksTarget) {
 		host = target.host
 	}
 
-	var upstream net.Conn
-	var err error
 	useWarp := r.warpRules.matches(host) || targetWarp
 	useByeDPI := r.byeDPIRules.matches(host) || targetByeDPI
-	routedViaWarp := false
-	if useWarp {
+	autoFallback := r.routes != nil && !r.warpRules.all
+	base := orderRoutes(baseRouteOrder(useWarp, useByeDPI, autoFallback), 0, false, r.routeAvailable)
+	if !autoFallback {
+		// Keep the fixed routes even if WARP is unavailable; dialing it fails
+		// with a clear error and falls back like before.
+		base = baseRouteOrder(useWarp, useByeDPI, false)
+	}
+	key := routeKey(host, target)
+	var learned routeKind
+	hasLearned := false
+	if autoFallback {
+		learned, hasLearned = r.routes.lookup(key)
+	}
+	order := orderRoutes(base, learned, hasLearned, nil)
+	if hasLearned && learned != base[0] {
+		flowRouterLogf("TCP route learned %s: host=%s target=%s", learned, key, target.address())
+	} else if order[0] == routeWarp {
 		flowRouterLogf("TCP route WARP: host=%s target=%s", host, target.address())
-		warpTimeout := 4 * time.Second
-		if r.warpRules.all {
-			warpTimeout = 8 * time.Second
-		}
-		warpContext, cancelWarp := context.WithTimeout(r.context, warpTimeout)
-		upstream, err = r.dialWarp(warpContext, target.address())
-		cancelWarp()
-		if err != nil {
-			flowRouterLogf("TCP route WARP failed: host=%s target=%s: %v", host, target.address(), err)
-			if useByeDPI {
-				flowRouterLogf("TCP route ByeDPI fallback: host=%s target=%s", host, target.address())
-				fallbackContext, cancelFallback := context.WithTimeout(r.context, 15*time.Second)
-				upstream, err = dialSocks(fallbackContext, r.byeDPIAddress, target)
-				cancelFallback()
-			}
-		} else {
-			routedViaWarp = true
-		}
-	} else if useByeDPI {
+	} else if order[0] == routeByeDPI && !autoFallback {
 		flowRouterLogf("TCP route ByeDPI: host=%s target=%s", host, target.address())
-		fallbackContext, cancelFallback := context.WithTimeout(r.context, 15*time.Second)
-		upstream, err = dialSocks(fallbackContext, r.byeDPIAddress, target)
-		cancelFallback()
+	}
+
+	timings := r.timings
+	if !autoFallback {
+		timings = legacyTimings(r.warpRules.all)
+	}
+	result, err := r.connectWithFallback(target, initial, order, autoFallback, timings, r.dial)
+	if !autoFallback {
+		for _, attempt := range result.attempts {
+			flowRouterLogf("TCP route %s failed: host=%s target=%s: %v", attempt.route, host, target.address(), attempt.err)
+		}
 	} else {
-		directContext, cancelDirect := context.WithTimeout(r.context, 10*time.Second)
-		upstream, err = (&net.Dialer{}).DialContext(directContext, "tcp", target.address())
-		cancelDirect()
+		r.learnFromResult(key, base, learned, hasLearned, result, err)
 	}
 	if err != nil {
 		return
 	}
-	if routedViaWarp {
+	upstream := result.upstream
+	defer upstream.Close()
+	if result.route == routeWarp {
 		flowRouterLogf("TCP route WARP connected: host=%s target=%s", host, target.address())
 	}
-	defer upstream.Close()
+	if len(result.response) > 0 {
+		if _, err = client.Write(result.response); err != nil {
+			return
+		}
+	}
+	if result.initialSent {
+		initial = nil
+	}
 	relayTCP(client, upstream, initial)
+}
+
+// legacyTimings reproduces the fixed-route timeouts used outside Auto fallback.
+func legacyTimings(warpOnly bool) autoTimings {
+	warpTimeout := 4 * time.Second
+	if warpOnly {
+		warpTimeout = 8 * time.Second
+	}
+	return autoTimings{
+		attempt: map[routeKind]time.Duration{
+			routeWarp: warpTimeout, routeByeDPI: 15 * time.Second, routeDirect: 10 * time.Second,
+		},
+		probeBudget: time.Hour,
+		lastDial: map[routeKind]time.Duration{
+			routeWarp: warpTimeout, routeByeDPI: 15 * time.Second, routeDirect: 10 * time.Second,
+		},
+	}
 }
 
 func (r *flowRouter) dialWarp(ctx context.Context, target string) (net.Conn, error) {
@@ -504,7 +550,8 @@ func (r *flowRouter) handleUDP(control net.Conn) {
 			// The DNS cache lets IP-based QUIC packets follow the same WARP rules as
 			// TCP. Unknown UDP/443 must not be forced through WARP: doing that stalls
 			// ordinary sites on mobile providers that impair WireGuard UDP.
-			if r.warpRules.matches(host) || r.warpRules.matches(frame.target.host) {
+			if r.warpRules.matches(host) || r.warpRules.matches(frame.target.host) ||
+				(!r.warpRules.all && r.learnedWarp(host, frame.target.host)) {
 				key := frame.target.address()
 				queued := pendingWarpPacket{
 					payload:  append([]byte(nil), frame.payload...),

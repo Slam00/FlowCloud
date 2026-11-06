@@ -28,8 +28,11 @@ class ByeDpiProxyCmdPreferences(val args: Array<String>) : ByeDpiProxyPreference
         private fun cmdToArgs(cmd: String): Array<String> {
             val firstArgIndex = cmd.indexOf("-")
             val argsStr = (if (firstArgIndex > 0) cmd.substring(firstArgIndex) else cmd).trim()
-            return arrayOf("ciadpi") + shellSplit(argsStr)
+            return arrayOf("ciadpi") + shellSplit(argsStr).filter { it !in IGNORED_ARGS }
         }
+
+        // Options that would make the in-app core exit right away instead of serving.
+        private val IGNORED_ARGS = setOf("-h", "--help", "-v", "--version", "-D", "--daemon")
     }
 }
 
@@ -133,6 +136,90 @@ class ByeDpiProxyUIPreferences(
         dropSack = preferences.getBoolean("byedpi_drop_sack", false),
         byedpiFakeOffset = preferences.getString("byedpi_fake_offset", null)?.toIntOrNull(),
     )
+
+    /**
+     * Converts the UI settings to a byedpi 17.x command line.
+     *
+     * Groups are separated with `-An`. Whitelist hosts get a leading group without any
+     * desync (they bypass it), blacklist hosts limit the desync group to themselves.
+     * When every group is limited, the core appends a pass-through group on its own.
+     */
+    fun toArgs(): Array<String> {
+        val args = mutableListOf("ciadpi", "-i", ip, "-p", port.toString())
+        args += listOf("-c", maxConnections.toString(), "-b", bufferSize.toString())
+        if (customTtl && defaultTtl > 0) args += listOf("-g", defaultTtl.toString())
+        if (noDomain) args += "-N"
+        if (tcpFastOpen) args += "-F"
+
+        val hostsList = hosts?.split(Regex("\\s+"))?.filter { it.isNotEmpty() }
+            ?.joinToString(" ")
+            ?.takeIf { it.isNotEmpty() }
+
+        if (hostsMode == HostsMode.Whitelist && hostsList != null) {
+            args += listOf("-H", ":$hostsList", "-An")
+        }
+
+        val tcpProtocols = buildList {
+            if (desyncHttps) add("t")
+            if (desyncHttp) add("h")
+        }
+        // Legacy behaviour: "at host" means SNI as soon as HTTPS is desynced.
+        val hostFlag = if (desyncHttps) "+s" else "+h"
+
+        if (tcpProtocols.isNotEmpty() || !desyncUdp) {
+            if (tcpProtocols.isNotEmpty()) args += listOf("-K", tcpProtocols.joinToString(","))
+            if (hostsMode == HostsMode.Blacklist && hostsList != null) {
+                args += listOf("-H", ":$hostsList")
+            }
+
+            val splitOption = when (desyncMethod) {
+                DesyncMethod.None -> null
+                DesyncMethod.Split -> "-s"
+                DesyncMethod.Disorder -> "-d"
+                DesyncMethod.Fake -> "-f"
+                DesyncMethod.OOB -> "-o"
+                DesyncMethod.DISOOB -> "-q"
+            }
+            if (splitOption != null) {
+                args += listOf(splitOption, "$splitPosition${if (splitAtHost) hostFlag else ""}")
+            }
+            if (desyncMethod == DesyncMethod.Fake) {
+                args += listOf("-t", fakeTtl.toString())
+                if (fakeSni.isNotBlank()) args += listOf("-n", fakeSni.trim())
+                if (fakeOffset > 0) args += listOf("-O", fakeOffset.toString())
+            }
+            if (desyncMethod == DesyncMethod.OOB || desyncMethod == DesyncMethod.DISOOB) {
+                val oob = (oobChar.toInt() and 0xFF).toChar()
+                args += listOf("-e", if (oob == '\\') "\\\\" else oob.toString())
+            }
+
+            val modHttp = buildList {
+                if (hostMixedCase) add("h")
+                if (domainMixedCase) add("d")
+                if (hostRemoveSpaces) add("r")
+            }
+            if (modHttp.isNotEmpty()) args += listOf("-M", modHttp.joinToString(","))
+
+            if (tlsRecordSplit) {
+                args += listOf(
+                    "-r",
+                    "$tlsRecordSplitPosition${if (tlsRecordSplitAtSni) hostFlag else ""}",
+                )
+            }
+            if (dropSack) args += "-Y"
+        }
+
+        if (desyncUdp) {
+            if (tcpProtocols.isNotEmpty()) args += "-An"
+            args += listOf("-K", "u")
+            if (hostsMode == HostsMode.Blacklist && hostsList != null) {
+                args += listOf("-H", ":$hostsList")
+            }
+            if (udpFakeCount > 0) args += listOf("-a", udpFakeCount.toString())
+        }
+
+        return args.toTypedArray()
+    }
 
     enum class DesyncMethod {
         None,

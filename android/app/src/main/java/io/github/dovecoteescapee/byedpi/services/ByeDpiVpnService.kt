@@ -15,6 +15,7 @@ import android.os.Looper
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.PowerManager
+import android.os.SystemClock
 import android.util.Log
 import androidx.lifecycle.lifecycleScope
 import io.github.dovecoteescapee.byedpi.R
@@ -22,6 +23,7 @@ import io.github.dovecoteescapee.byedpi.activities.MainActivity
 import io.github.dovecoteescapee.byedpi.core.AutoRouteProxy
 import io.github.dovecoteescapee.byedpi.core.AppBypassRepository
 import io.github.dovecoteescapee.byedpi.core.BlocklistRepository
+import io.github.dovecoteescapee.byedpi.core.ByeDpiAutoStrategies
 import io.github.dovecoteescapee.byedpi.core.ByeDpiProxy
 import io.github.dovecoteescapee.byedpi.core.ByeDpiProxyPreferences
 import io.github.dovecoteescapee.byedpi.core.DnsOverHttpsProxy
@@ -40,7 +42,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.io.File
+import java.net.Inet4Address
 
 class ByeDpiVpnService : LifecycleVpnService() {
     private val byeDpiProxy = ByeDpiProxy()
@@ -70,6 +74,7 @@ class ByeDpiVpnService : LifecycleVpnService() {
         private const val MOBILE_IPV6_FIX_KEY = "mobile_ipv6_fix_applied_v027"
         private const val MOBILE_SPLIT_FIX_KEY = "mobile_split_fix_applied_v0210"
         private const val MOBILE_TLS_DESYNC_FIX_KEY = "mobile_tls_desync_fix_applied_v0214"
+        private const val NETWORK_SWITCH_SETTLE_MS = 5_000L
         const val EXTRA_TRANSPORT = "transport"
 
         private var status: ServiceStatus = ServiceStatus.Disconnected
@@ -227,7 +232,21 @@ class ByeDpiVpnService : LifecycleVpnService() {
             throw IllegalStateException("Proxy fields not null")
         }
 
-        val preferences = getByeDpiPreferences()
+        val preferences = getByeDpiPreferences().let { base ->
+            if (selectedTransport == TransportMode.Auto) {
+                // Auto mode retries failing destinations with further desync
+                // strategies inside byedpi before the route engine gives up on it.
+                ByeDpiAutoStrategies.forAutoMode(base, autoCacheDir()).also {
+                    DiagnosticsRepository.append(
+                        applicationContext,
+                        TAG,
+                        "ByeDPI auto strategies: ${ByeDpiAutoStrategies.strategies.joinToString { it.name }}",
+                    )
+                }
+            } else {
+                base
+            }
+        }
 
         val ready = CompletableDeferred<Unit>()
         proxyJob = lifecycleScope.launch(Dispatchers.IO) {
@@ -245,13 +264,26 @@ class ByeDpiVpnService : LifecycleVpnService() {
             }
 
             withContext(Dispatchers.Main) {
-                if (code != 0) {
-                    Log.e(TAG, "Proxy stopped with code $code")
-                    updateStatus(ServiceStatus.Failed)
-                } else {
-                    if (!stopping) {
-                        lifecycleScope.launch { stop() }
+                when {
+                    // Controlled restart (network recovery) or shutdown: the caller owns the status.
+                    stopping -> Log.i(TAG, "Proxy exited with code $code during a controlled stop")
+
+                    // The proxy died while the tunnel is up: restart the transport instead of
+                    // reporting a failure while the service keeps running.
+                    code != 0 && desiredRunning && tunFd != null -> {
+                        Log.e(TAG, "Proxy stopped with code $code; restarting transport")
+                        DiagnosticsRepository.append(applicationContext, TAG,
+                            "ByeDPI exited with code $code; restarting transport")
+                        needsNetworkRecovery = true
+                        scheduleNetworkRecovery()
                     }
+
+                    code != 0 -> {
+                        Log.e(TAG, "Proxy stopped with code $code")
+                        updateStatus(ServiceStatus.Failed)
+                    }
+
+                    else -> lifecycleScope.launch { stop() }
                 }
             }
         }
@@ -333,6 +365,7 @@ class ByeDpiVpnService : LifecycleVpnService() {
                 TAG,
                 "Starting route engine: mode=$selectedTransport, DNS relay=${dnsRelayAddress.ifBlank { "unavailable" }}",
             )
+            autoRouteProxy.setPhysicalNetwork(underlyingNetwork?.networkHandle ?: 0L)
             autoRouteProxy.start(
                 listenAddress = "127.0.0.1:$routerPort",
                 byeDpiAddress = "127.0.0.1:$byeDpiPort",
@@ -340,12 +373,21 @@ class ByeDpiVpnService : LifecycleVpnService() {
                 warpRules = warpRules,
                 byeDpiRules = byeDpiRules,
                 warpConfig = warpConfigJson,
+                routerOptions = routerOptionsJson(),
             )
         }
         autoRouterStarted = true
         drainRouterDiagnostics()
         return routerPort
     }
+
+    private fun autoCacheDir(): File = File(noBackupFilesDir, "auto-route").apply { mkdirs() }
+
+    private fun routerOptionsJson(): String = JSONObject()
+        .put("auto_fallback", selectedTransport == TransportMode.Auto)
+        .put("state_file", File(autoCacheDir(), "routes.json").absolutePath)
+        .put("learn_ttl_seconds", ByeDpiAutoStrategies.DEFAULT_CACHE_TTL_SECONDS)
+        .toString()
 
     private fun stopAutoRouter() {
         if (autoRouterStarted) {
@@ -428,14 +470,28 @@ class ByeDpiVpnService : LifecycleVpnService() {
         }
     }
 
+    private fun isUsablePhysicalNetwork(network: Network): Boolean {
+        val capabilities = getSystemService(ConnectivityManager::class.java)
+            .getNetworkCapabilities(network) ?: return false
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            (Build.VERSION.SDK_INT < Build.VERSION_CODES.P ||
+                capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED))
+    }
+
     private fun networkFingerprint(network: Network): String {
         val properties = getSystemService(ConnectivityManager::class.java)
             .getLinkProperties(network) ?: return ""
+        // Only the interface and its IPv4 addresses: carriers rotate temporary IPv6
+        // addresses, routes and DNS servers without breaking existing sockets, and
+        // restarting the transport for those would drop every active connection.
         return listOf(
             properties.interfaceName.orEmpty(),
-            properties.linkAddresses.map { it.toString() }.sorted().joinToString(),
-            properties.routes.map { it.toString() }.sorted().joinToString(),
-            properties.dnsServers.map { it.hostAddress }.sortedBy { it }.joinToString(),
+            properties.linkAddresses
+                .map { it.address }
+                .filterIsInstance<Inet4Address>()
+                .mapNotNull { it.hostAddress }
+                .sorted()
+                .joinToString(),
         ).joinToString("|")
     }
 
@@ -523,6 +579,8 @@ class ByeDpiVpnService : LifecycleVpnService() {
         networkRecoveryJob = lifecycleScope.launch {
             // Coalesce roaming callbacks; the same Wi-Fi Network/IP needs no restart.
             delay(750)
+            var pendingCandidate: Network? = null
+            var pendingSince = 0L
             while (desiredRunning) {
                 if (tunFd == null) return@launch
                 val candidate = chooseUnderlyingNetwork()
@@ -536,6 +594,26 @@ class ByeDpiVpnService : LifecycleVpnService() {
                 }
                 if (!needsNetworkRecovery && candidate == underlyingNetwork &&
                     networkFingerprint(candidate) == underlyingFingerprint) return@launch
+                // While the current network still exists, only move to a better one after it
+                // has stayed the best choice for a while: Wi-Fi briefly losing VALIDATED would
+                // otherwise cause two transport restarts (Wi-Fi -> cellular -> Wi-Fi).
+                val current = underlyingNetwork
+                if (!needsNetworkRecovery && current != null && candidate != current &&
+                    isUsablePhysicalNetwork(current)
+                ) {
+                    val now = SystemClock.elapsedRealtime()
+                    if (pendingCandidate != candidate) {
+                        pendingCandidate = candidate
+                        pendingSince = now
+                        DiagnosticsRepository.append(applicationContext, TAG,
+                            "Better network $candidate appeared; waiting for it to settle")
+                    }
+                    if (now - pendingSince < NETWORK_SWITCH_SETTLE_MS) {
+                        delay(750)
+                        continue
+                    }
+                }
+                pendingCandidate = null
                 setStatus(AppStatus.Reconnecting, Mode.VPN)
                 try {
                     mutex.withLock {
@@ -558,7 +636,8 @@ class ByeDpiVpnService : LifecycleVpnService() {
                     // A second switch may have arrived while WARP was being started.
                     if (candidate == chooseUnderlyingNetwork() &&
                         networkFingerprint(candidate) == underlyingFingerprint && !needsNetworkRecovery) {
-                        setStatus(AppStatus.Running, Mode.VPN)
+                        // Also resets a stale Failed status and tells the UI/tile we are connected again.
+                        updateStatus(ServiceStatus.Connected)
                         DiagnosticsRepository.append(applicationContext, TAG,
                             "Transport recovered on network $candidate")
                     }

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <bool name="flow_light_bars">true</bool>
+    <color name="flow_card_stroke">@color/flow_outline</color>
+    <color name="flow_segment_selected">@color/flow_surface</color>
+    <color name="flow_ripple">#1F2B59D9</color>
+</resources>

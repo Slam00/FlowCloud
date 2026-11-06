@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.net.Uri
 import android.net.VpnService
 import android.os.Build
@@ -43,6 +44,7 @@ import io.github.dovecoteescapee.byedpi.services.appStatus
 import io.github.dovecoteescapee.byedpi.services.connectionStatus
 import io.github.dovecoteescapee.byedpi.services.setStatus
 import io.github.dovecoteescapee.byedpi.utility.*
+import io.github.dovecoteescapee.byedpi.views.ConnectionRingView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -197,6 +199,7 @@ class MainActivity : AppCompatActivity() {
 
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        applySystemBarAppearance()
         blocklists = BlocklistRepository(applicationContext)
         splitTunnel = SplitTunnelRepository(applicationContext)
         appBypass = AppBypassRepository(applicationContext)
@@ -271,10 +274,11 @@ class MainActivity : AppCompatActivity() {
             TransportMode.ByeDpi -> binding.transportGroup.check(R.id.mode_byedpi)
             TransportMode.Warp -> binding.transportGroup.check(R.id.mode_warp)
         }
-        binding.transportGroup.addOnButtonCheckedListener { _, _, checked ->
-            if (checked) {
+        binding.transportGroup.setOnCheckedChangeListener { _, checkedId ->
+            if (checkedId != View.NO_ID) {
                 preferences.edit().putString("transport_mode", selectedTransport().name.lowercase()).apply()
                 updateDecision()
+                updateStatus()
             }
         }
         updateDecision()
@@ -365,22 +369,17 @@ class MainActivity : AppCompatActivity() {
         val (status, mode) = appStatus
 
         Log.i(TAG, "Updating status: $status, $mode")
-        val busy = status == AppStatus.Connecting || status == AppStatus.Reconnecting ||
-            status == AppStatus.Disconnecting
-        binding.connectionRing.setBusy(busy)
-        binding.statusButton.strokeWidth = if (busy) 0 else (2 * resources.displayMetrics.density).toInt()
+        renderConnectionState(status)
         val canEdit = status == AppStatus.Halted
         binding.transportGroup.isEnabled = canEdit
+        binding.transportGroup.alpha = if (canEdit) 1f else 0.5f
         for (index in 0 until binding.transportGroup.childCount) {
             binding.transportGroup.getChildAt(index).isEnabled = canEdit
         }
 
         when (status) {
             AppStatus.Halted -> {
-                binding.statusButton.setText(R.string.vpn_connect)
-                binding.statusButton.contentDescription = getString(R.string.vpn_connect)
                 binding.statusButton.isEnabled = true
-                binding.transportGroup.isEnabled = true
                 binding.domainRulesInput.isEnabled = true
                 binding.networkRulesInput.isEnabled = true
                 binding.saveRoutingRulesButton.isEnabled = true
@@ -394,10 +393,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             AppStatus.Running -> {
-                binding.statusButton.setText(R.string.vpn_connected)
-                binding.statusButton.contentDescription = getString(R.string.vpn_disconnect)
                 binding.statusButton.isEnabled = true
-                binding.transportGroup.isEnabled = false
                 binding.domainRulesInput.isEnabled = false
                 binding.networkRulesInput.isEnabled = false
                 binding.saveRoutingRulesButton.isEnabled = false
@@ -407,13 +403,6 @@ class MainActivity : AppCompatActivity() {
             AppStatus.Connecting,
             AppStatus.Reconnecting,
             AppStatus.Disconnecting -> {
-                val label = when (status) {
-                    AppStatus.Connecting -> R.string.vpn_connecting
-                    AppStatus.Reconnecting -> R.string.vpn_reconnecting
-                    else -> R.string.vpn_disconnecting
-                }
-                binding.statusButton.setText(label)
-                binding.statusButton.contentDescription = getString(label)
                 binding.statusButton.isEnabled = status != AppStatus.Disconnecting
                 binding.domainRulesInput.isEnabled = false
                 binding.networkRulesInput.isEnabled = false
@@ -424,7 +413,66 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun selectedTransport(): TransportMode = when (binding.transportGroup.checkedButtonId) {
+    /** Ring, button label/colour and the status headline for the current connection state. */
+    private fun renderConnectionState(status: AppStatus) {
+        val ringState = when (status) {
+            AppStatus.Halted -> ConnectionRingView.State.Halted
+            AppStatus.Connecting -> ConnectionRingView.State.Connecting
+            AppStatus.Running -> ConnectionRingView.State.Running
+            AppStatus.Reconnecting -> ConnectionRingView.State.Reconnecting
+            AppStatus.Disconnecting -> ConnectionRingView.State.Disconnecting
+        }
+        binding.connectionRing.setState(ringState)
+
+        val accent = ContextCompat.getColor(
+            this,
+            when (status) {
+                AppStatus.Running -> R.color.flow_connected
+                AppStatus.Reconnecting -> R.color.flow_reconnecting
+                else -> R.color.flow_primary
+            },
+        )
+        val action = when (status) {
+            AppStatus.Halted -> R.string.vpn_connect
+            AppStatus.Running -> R.string.vpn_disconnect
+            AppStatus.Disconnecting -> R.string.vpn_disconnecting
+            else -> R.string.action_cancel
+        }
+        binding.statusAction.setText(action)
+        binding.statusButton.contentDescription = getString(action)
+        binding.statusAction.setTextColor(accent)
+        binding.statusIcon.imageTintList = ColorStateList.valueOf(accent)
+        binding.statusButton.alpha = if (status == AppStatus.Disconnecting) 0.6f else 1f
+
+        val title = when (status) {
+            AppStatus.Halted -> R.string.vpn_disconnected
+            AppStatus.Connecting -> R.string.vpn_connecting
+            AppStatus.Running -> R.string.vpn_connected
+            AppStatus.Reconnecting -> R.string.vpn_reconnecting
+            AppStatus.Disconnecting -> R.string.vpn_disconnecting
+        }
+        binding.statusTitle.setText(title)
+        binding.statusTitle.setTextColor(
+            if (status == AppStatus.Running) accent
+            else ContextCompat.getColor(this, R.color.flow_text),
+        )
+        val modeName = getString(
+            when (selectedTransport()) {
+                TransportMode.Auto -> R.string.mode_auto
+                TransportMode.ByeDpi -> R.string.mode_byedpi
+                TransportMode.Warp -> R.string.mode_warp
+            },
+        )
+        binding.statusSubtitle.text = when (status) {
+            AppStatus.Halted -> getString(R.string.status_sub_halted)
+            AppStatus.Connecting -> getString(R.string.status_sub_connecting, modeName)
+            AppStatus.Running -> getString(R.string.status_sub_running, modeName)
+            AppStatus.Reconnecting -> getString(R.string.status_sub_reconnecting)
+            AppStatus.Disconnecting -> getString(R.string.status_sub_disconnecting)
+        }
+    }
+
+    private fun selectedTransport(): TransportMode = when (binding.transportGroup.checkedRadioButtonId) {
         R.id.mode_byedpi -> TransportMode.ByeDpi
         R.id.mode_warp -> TransportMode.Warp
         else -> TransportMode.Auto
@@ -440,7 +488,10 @@ class MainActivity : AppCompatActivity() {
                 binding.decisionText.visibility = View.VISIBLE
                 binding.decisionText.setText(R.string.manual_warp)
             }
-            TransportMode.Auto -> binding.decisionText.visibility = View.GONE
+            TransportMode.Auto -> {
+                binding.decisionText.visibility = View.VISIBLE
+                binding.decisionText.setText(R.string.manual_auto)
+            }
         }
     }
 
@@ -476,10 +527,11 @@ class MainActivity : AppCompatActivity() {
     )
 
     private fun updateExcludedAppsStatus() {
-        binding.excludedAppsStatus.text = getString(
-            R.string.excluded_apps_status,
-            appBypass.load().size,
-        )
+        val count = appBypass.load().size
+        binding.excludedAppsStatus.text = count.toString()
+        binding.excludedAppsStatus.visibility = if (count > 0) View.VISIBLE else View.GONE
+        binding.excludedAppsStatus.contentDescription =
+            getString(R.string.excluded_apps_status, count)
     }
 
     private fun showAppBypassDialog() {

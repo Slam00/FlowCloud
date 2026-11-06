@@ -1,50 +1,76 @@
 package io.github.dovecoteescapee.byedpi.views
 
+import android.animation.TimeAnimator
 import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Canvas
+import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.RectF
+import android.os.Build
 import android.util.AttributeSet
 import android.view.View
-import android.view.animation.LinearInterpolator
+import androidx.annotation.ColorRes
 import androidx.core.content.ContextCompat
 import io.github.dovecoteescapee.byedpi.R
 import kotlin.math.PI
 import kotlin.math.sin
 
-/** A rotating arc around the connection button; the status text stays still. */
+/**
+ * Ring around the connection button. Its colour and motion show the connection state:
+ * a quiet track when off, a rotating arc while connecting, a solid ring with a slow
+ * halo when connected, and a slower amber arc on a dotted track while reconnecting.
+ */
 class ConnectionRingView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
 ) : View(context, attrs) {
-    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = ContextCompat.getColor(context, R.color.flow_primary)
+
+    enum class State { Halted, Connecting, Running, Reconnecting, Disconnecting }
+
+    private val density = resources.displayMetrics.density
+    private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
-        strokeWidth = 3 * resources.displayMetrics.density
     }
+    private val arcPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        strokeWidth = 4 * density
+    }
+    private val haloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 14 * density
+    }
+    private val dots = DashPathEffect(floatArrayOf(2 * density, 9 * density), 0f)
     private val ring = RectF()
-    private var phase = 0f
-    private var busy = false
-    private val animator = ValueAnimator.ofFloat(0f, 1f).apply {
-        duration = 1400
-        repeatCount = ValueAnimator.INFINITE
-        interpolator = LinearInterpolator()
-        addUpdateListener {
-            phase = it.animatedValue as Float
+
+    private var state = State.Halted
+    private var elapsedMs = 0L
+    private val animator = TimeAnimator().apply {
+        setTimeListener { _, total, _ ->
+            elapsedMs = total
             invalidate()
         }
     }
 
-    fun setBusy(value: Boolean) {
-        busy = value
-        visibility = if (value) VISIBLE else INVISIBLE
+    fun setState(value: State) {
+        if (state == value) return
+        state = value
+        elapsedMs = 0L
+        invalidate()
         updateAnimation()
     }
 
+    private fun color(@ColorRes id: Int) = ContextCompat.getColor(context, id)
+
+    private fun motionEnabled(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.O || ValueAnimator.areAnimatorsEnabled()
+
     private fun updateAnimation() {
-        if (busy && isAttachedToWindow && isShown && windowVisibility == VISIBLE) {
+        val shouldRun = state != State.Halted && motionEnabled() &&
+            isAttachedToWindow && isShown && windowVisibility == VISIBLE
+        if (shouldRun) {
             if (!animator.isStarted) animator.start()
         } else {
             animator.cancel()
@@ -74,16 +100,66 @@ class ConnectionRingView @JvmOverloads constructor(
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        if (!busy) return
-        val radius = minOf(width, height) / 2f - paint.strokeWidth * 2
-        ring.set(width / 2f - radius, height / 2f - radius,
-            width / 2f + radius, height / 2f + radius)
-        paint.alpha = 50
-        canvas.drawOval(ring, paint)
-        paint.alpha = 255
-        val sweep = 85f + 35f * sin(phase * 2 * PI).toFloat()
-        canvas.drawArc(ring, phase * 360f - 90f, sweep, false, paint)
-        paint.alpha = 110
-        canvas.drawArc(ring, phase * 360f + 90f, sweep / 2, false, paint)
+        val cx = width / 2f
+        val cy = height / 2f
+        val radius = minOf(width, height) / 2f - 12 * density
+        ring.set(cx - radius, cy - radius, cx + radius, cy + radius)
+        val animate = motionEnabled()
+
+        when (state) {
+            State.Halted -> {
+                trackPaint.color = color(R.color.flow_ring_track)
+                trackPaint.alpha = 255
+                trackPaint.strokeWidth = 2 * density
+                trackPaint.pathEffect = null
+                canvas.drawOval(ring, trackPaint)
+            }
+
+            State.Running -> {
+                val okColor = color(R.color.flow_connected)
+                val wave = if (animate) {
+                    (1 - kotlin.math.cos(2 * PI * elapsedMs / 2800.0).toFloat()) / 2
+                } else {
+                    0.5f
+                }
+                haloPaint.color = okColor
+                haloPaint.alpha = (255 * (0.18f + 0.24f * wave)).toInt()
+                val scale = 1f + 0.035f * wave
+                canvas.save()
+                canvas.scale(scale, scale, cx, cy)
+                canvas.drawOval(ring, haloPaint)
+                canvas.restore()
+                arcPaint.color = okColor
+                canvas.drawOval(ring, arcPaint)
+            }
+
+            State.Connecting, State.Disconnecting, State.Reconnecting -> {
+                val reconnecting = state == State.Reconnecting
+                val accent = color(
+                    if (reconnecting) R.color.flow_reconnecting else R.color.flow_primary,
+                )
+                trackPaint.color = accent
+                if (reconnecting) {
+                    trackPaint.strokeWidth = 3 * density
+                    trackPaint.alpha = 90
+                    trackPaint.pathEffect = dots
+                } else {
+                    trackPaint.strokeWidth = 4 * density
+                    trackPaint.alpha = 40
+                    trackPaint.pathEffect = null
+                }
+                canvas.drawOval(ring, trackPaint)
+
+                val period = if (reconnecting) 2200f else 1250f
+                val rotation = if (animate) (elapsedMs % period.toLong()) / period * 360f else 0f
+                val sweep = if (animate) {
+                    165f + 75f * sin(2 * PI * elapsedMs / 1600.0).toFloat()
+                } else {
+                    140f
+                }
+                arcPaint.color = accent
+                canvas.drawArc(ring, rotation - 90f, sweep, false, arcPaint)
+            }
+        }
     }
 }

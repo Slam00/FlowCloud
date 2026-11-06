@@ -260,9 +260,10 @@ func openWarp(
 	if err != nil {
 		return nil, err
 	}
+	bind := conn.NewDefaultBind()
 	dev := device.NewDevice(
 		tunDevice,
-		conn.NewDefaultBind(),
+		bind,
 		device.NewLogger(device.LogLevelSilent, "FlowCloudAuto"),
 	)
 	uapi := strings.Join([]string{
@@ -294,6 +295,7 @@ func openWarp(
 		dev.Close()
 		return nil, err
 	}
+	bindWireGuardSockets(bind)
 	return &warpTunnel{device: dev, net: tunnelNet, resolver: resolver}, nil
 }
 

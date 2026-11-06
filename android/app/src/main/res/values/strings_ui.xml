@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="manual_auto">Для каждого сайта сам выбирает ByeDPI или WARP</string>
+    <string name="status_sub_halted">Трафик идёт напрямую</string>
+    <string name="status_sub_connecting">Режим «%1$s»: подбираем маршрут</string>
+    <string name="status_sub_running">Режим «%1$s»</string>
+    <string name="status_sub_reconnecting">Сеть сменилась, восстанавливаем туннель</string>
+    <string name="status_sub_disconnecting">Закрываем туннель</string>
+    <string name="action_cancel">Отменить</string>
+    <string name="settings_routing_section">Маршрутизация через WARP</string>
+    <string name="settings_more_section">Дополнительно</string>
+    <string name="excluded_apps_short">Работают напрямую, мимо FlowCloud</string>
+</resources>

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <bool name="flow_light_bars">false</bool>
+    <color name="flow_card_stroke">@android:color/transparent</color>
+    <color name="flow_segment_selected">@color/flow_primary_container</color>
+    <color name="flow_ripple">#2986A6FF</color>
+</resources>

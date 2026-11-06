@@ -1,10 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="flow_primary">#769BFF</color>
-    <color name="flow_primary_dark">#416CD8</color>
-    <color name="flow_background">#080A0F</color>
-    <color name="flow_surface">#12151C</color>
-    <color name="flow_surface_alt">#252A35</color>
-    <color name="flow_text_secondary">#A7ADBA</color>
-    <color name="flow_connected">#58D8B2</color>
+    <color name="flow_primary">#86A6FF</color>
+    <color name="flow_on_primary">#0B1430</color>
+    <color name="flow_primary_container">#21305A</color>
+    <color name="flow_on_primary_container">#DCE5FC</color>
+    <color name="flow_primary_dark">#5C7FE0</color>
+    <color name="flow_background">#0B0E14</color>
+    <color name="flow_surface">#141922</color>
+    <color name="flow_surface_alt">#1C2330</color>
+    <color name="flow_text">#E8ECF3</color>
+    <color name="flow_text_secondary">#9AA3B2</color>
+    <color name="flow_outline">#262E3B</color>
+    <color name="flow_ring_track">#2E3747</color>
+    <color name="flow_connected">#4FD6A5</color>
+    <color name="flow_reconnecting">#F2B84B</color>
     <color name="flow_disconnected">#858C9A</color>
 </resources>

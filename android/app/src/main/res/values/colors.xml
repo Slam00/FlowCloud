@@ -2,12 +2,19 @@
 <resources>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
-    <color name="flow_primary">#1769E0</color>
-    <color name="flow_primary_dark">#0D47B8</color>
-    <color name="flow_background">#F5F7FC</color>
-    <color name="flow_surface">#FFFFFFFF</color>
-    <color name="flow_surface_alt">#EAF0FF</color>
-    <color name="flow_text_secondary">#5E6472</color>
-    <color name="flow_connected">#22A06B</color>
+    <color name="flow_primary">#2B59D9</color>
+    <color name="flow_on_primary">#FFFFFF</color>
+    <color name="flow_primary_container">#DCE5FC</color>
+    <color name="flow_on_primary_container">#0E2A73</color>
+    <color name="flow_primary_dark">#1D44B0</color>
+    <color name="flow_background">#F3F5F9</color>
+    <color name="flow_surface">#FFFFFF</color>
+    <color name="flow_surface_alt">#E7ECF5</color>
+    <color name="flow_text">#121722</color>
+    <color name="flow_text_secondary">#5B6475</color>
+    <color name="flow_outline">#DCE1EA</color>
+    <color name="flow_ring_track">#C9D1DE</color>
+    <color name="flow_connected">#13976A</color>
+    <color name="flow_reconnecting">#B7790A</color>
     <color name="flow_disconnected">#8B93A7</color>
 </resources>

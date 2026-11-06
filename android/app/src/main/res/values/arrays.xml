@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <array name="themes">
-        <item name="system">System</item>
-        <item name="light">Light</item>
-        <item name="dark">Dark</item>
+        <item name="system">Как в системе</item>
+        <item name="light">Светлая</item>
+        <item name="dark">Тёмная</item>
     </array>
     <array name="themes_entries">
         <item name="system">system</item>
@@ -13,7 +13,7 @@
 
     <array name="byedpi_modes">
         <item name="vpn">VPN</item>
-        <item name="proxy">Proxy</item>
+        <item name="proxy">Прокси</item>
     </array>
     <array name="byedpi_modes_entries">
         <item name="vpn">vpn</item>
@@ -21,12 +21,12 @@
     </array>
 
     <array name="byedpi_desync_methods">
-        <item name="none">None</item>
-        <item name="split">Split</item>
-        <item name="disorder">Disorder</item>
-        <item name="fake">Fake</item>
-        <item name="oob">Out-of-band</item>
-        <item name="oob">Disordered out-of-band</item>
+        <item name="none">Нет</item>
+        <item name="split">Split (разделение)</item>
+        <item name="disorder">Disorder (перемешивание)</item>
+        <item name="fake">Fake (фейковый пакет)</item>
+        <item name="oob">OOB (внеполосные данные)</item>
+        <item name="oob">Disorder OOB</item>
     </array>
     <array name="byedpi_desync_methods_entries">
         <item name="none">none</item>
@@ -38,9 +38,9 @@
     </array>
 
     <array name="byedpi_hosts_modes">
-        <item name="disable">Disable</item>
-        <item name="blacklist">Blacklist</item>
-        <item name="whitelist">Whitelist</item>
+        <item name="disable">Выключено</item>
+        <item name="blacklist">Чёрный список</item>
+        <item name="whitelist">Белый список</item>
     </array>
     <array name="byedpi_hosts_modes_entries">
         <item name="disable">disable</item>
