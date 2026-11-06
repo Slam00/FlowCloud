@@ -617,7 +617,10 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             try {
                 when (val result = appUpdates.check()) {
-                    is UpdateCheckResult.Available -> showUpdateDialog(result.release)
+                    is UpdateCheckResult.Available ->
+                        if (manual || !appUpdates.isDismissed(result.release.version)) {
+                            showUpdateDialog(result.release)
+                        }
                     UpdateCheckResult.UpToDate -> if (manual) {
                         Toast.makeText(
                             this@MainActivity,
@@ -660,7 +663,7 @@ class MainActivity : AppCompatActivity() {
         MaterialAlertDialogBuilder(this)
             .setTitle(getString(R.string.update_available_title, release.version))
             .setMessage(message)
-            .setNegativeButton(android.R.string.cancel, null)
+            .setNegativeButton(android.R.string.cancel) { _, _ -> appUpdates.dismiss(release.version) }
             .setPositiveButton(R.string.download_update) { _, _ -> downloadUpdate(release) }
             .show()
     }

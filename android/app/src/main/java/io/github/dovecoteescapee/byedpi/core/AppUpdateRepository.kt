@@ -36,8 +36,12 @@ class AppUpdateRepository(private val context: Context) {
     companion object {
         private const val RELEASE_API =
             "https://api.github.com/repos/Slam00/FlowCloud/releases/latest"
-        private const val CHECK_INTERVAL_MS = 24L * 60L * 60L * 1_000L
+        // Automatic checks run on every app launch; this only absorbs activity
+        // re-creation (rotation, theme change) and stays far below GitHub's
+        // unauthenticated limit of 60 requests per hour.
+        internal const val CHECK_INTERVAL_MS = 60L * 60L * 1_000L
         private const val LAST_CHECK_KEY = "last_check"
+        private const val DISMISSED_VERSION_KEY = "dismissed_version"
         private const val MAX_APK_SIZE = 250L * 1024L * 1024L
     }
 
@@ -48,11 +52,23 @@ class AppUpdateRepository(private val context: Context) {
         .build()
 
     fun shouldCheckAutomatically(now: Long = System.currentTimeMillis()): Boolean {
-        return now - preferences.getLong(LAST_CHECK_KEY, 0L) >= CHECK_INTERVAL_MS
+        val lastCheck = preferences.getLong(LAST_CHECK_KEY, 0L)
+        // A clock moved backwards must not block checks until it catches up.
+        return lastCheck > now || now - lastCheck >= CHECK_INTERVAL_MS
+    }
+
+    /** The user declined [version]; automatic checks stay quiet until a newer one appears. */
+    fun dismiss(version: String) {
+        preferences.edit().putString(DISMISSED_VERSION_KEY, version).apply()
+    }
+
+    /** True when an automatic check should not offer [version] again. */
+    fun isDismissed(version: String): Boolean {
+        val dismissed = preferences.getString(DISMISSED_VERSION_KEY, null) ?: return false
+        return !VersionNameComparator.isNewer(version, dismissed)
     }
 
     suspend fun check(): UpdateCheckResult = withContext(Dispatchers.IO) {
-        markChecked()
         val request = Request.Builder()
             .url(RELEASE_API)
             .header("Accept", "application/vnd.github+json")
@@ -62,11 +78,14 @@ class AppUpdateRepository(private val context: Context) {
 
         client.newCall(request).execute().use { response ->
             if (response.code == 404) {
+                markChecked()
                 return@withContext UpdateCheckResult.NotPublished
             }
             if (!response.isSuccessful) {
                 throw IOException("GitHub returned HTTP ${response.code}")
             }
+            // Only a real answer counts: after a network failure the next launch retries.
+            markChecked()
 
             val payload = response.body?.string()
                 ?: throw IOException("Empty GitHub response")
