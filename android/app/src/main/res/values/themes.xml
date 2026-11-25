@@ -82,6 +82,20 @@
         <item name="boxCornerRadiusBottomEnd">12dp</item>
     </style>
 
+    <style name="Widget.FlowCloud.Dropdown" parent="Widget.Material3.TextInputLayout.FilledBox.ExposedDropdownMenu">
+        <item name="boxBackgroundColor">@color/flow_surface</item>
+        <item name="boxStrokeWidth">0dp</item>
+        <item name="boxStrokeWidthFocused">0dp</item>
+        <item name="boxCornerRadiusTopStart">16dp</item>
+        <item name="boxCornerRadiusTopEnd">16dp</item>
+        <item name="boxCornerRadiusBottomStart">16dp</item>
+        <item name="boxCornerRadiusBottomEnd">16dp</item>
+        <item name="endIconTint">@color/flow_text_secondary</item>
+        <item name="hintTextColor">@color/flow_text_secondary</item>
+        <item name="android:textColorHint">@color/flow_text_secondary</item>
+        <item name="helperTextTextColor">@color/flow_text_secondary</item>
+    </style>
+
     <style name="Widget.FlowCloud.Segment" parent="">
         <item name="android:layout_width">0dp</item>
         <item name="android:layout_height">match_parent</item>

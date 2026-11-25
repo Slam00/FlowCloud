@@ -30,6 +30,7 @@ import io.github.dovecoteescapee.byedpi.core.DnsOverHttpsProxy
 import io.github.dovecoteescapee.byedpi.core.DiagnosticsRepository
 import io.github.dovecoteescapee.byedpi.core.TProxyService
 import io.github.dovecoteescapee.byedpi.core.TransportHealthProbe
+import io.github.dovecoteescapee.byedpi.core.WarpNetworkKey
 import io.github.dovecoteescapee.byedpi.core.WarpRegistrationRepository
 import io.github.dovecoteescapee.byedpi.core.SplitTunnelRepository
 import io.github.dovecoteescapee.byedpi.data.*
@@ -106,8 +107,7 @@ class ByeDpiVpnService : LifecycleVpnService() {
                 setStatus(AppStatus.Connecting, Mode.VPN)
                 selectedTransport = intent.getStringExtra(EXTRA_TRANSPORT)
                     ?.let { runCatching { TransportMode.valueOf(it) }.getOrNull() }
-                    ?: activeTransport
-                    ?: TransportMode.Auto
+                    ?: getPreferences().transportMode()
                 activeTransport = selectedTransport
                 DiagnosticsRepository.beginSession(applicationContext, selectedTransport.name)
                 DiagnosticsRepository.append(applicationContext, TAG, "VPN service received START_ACTION")
@@ -388,6 +388,28 @@ class ByeDpiVpnService : LifecycleVpnService() {
         }
         autoRouterStarted = true
         drainRouterDiagnostics()
+        if (selectedTransport != TransportMode.ByeDpi && warpConfigJson.isNotBlank()) {
+            val warpState = autoRouteProxy.warpState()
+            // Profile upkeep needs the network and must not delay the tunnel: the
+            // results apply on the next start.
+            lifecycleScope.launch(Dispatchers.IO) {
+                val repository = WarpRegistrationRepository(applicationContext)
+                runCatching { repository.reportWarpState(warpState, byeDpiPort) }
+                    .onSuccess { rotated ->
+                        if (rotated) {
+                            DiagnosticsRepository.append(applicationContext, TAG,
+                                "WARP key rotated after repeated failed starts")
+                        }
+                    }
+                runCatching { repository.ensureMasque(byeDpiPort) }
+                    .onSuccess { added ->
+                        if (added) {
+                            DiagnosticsRepository.append(applicationContext, TAG,
+                                "MASQUE fallback device registered")
+                        }
+                    }
+            }
+        }
         return routerPort
     }
 
@@ -397,6 +419,8 @@ class ByeDpiVpnService : LifecycleVpnService() {
         .put("auto_fallback", selectedTransport == TransportMode.Auto)
         .put("state_file", File(autoCacheDir(), "routes.json").absolutePath)
         .put("learn_ttl_seconds", ByeDpiAutoStrategies.DEFAULT_CACHE_TTL_SECONDS)
+        .put("endpoint_cache_file", File(autoCacheDir(), "warp-endpoints.json").absolutePath)
+        .put("network_key", WarpNetworkKey.of(applicationContext, underlyingNetwork))
         .toString()
 
     private fun stopAutoRouter() {

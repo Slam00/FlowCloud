@@ -17,4 +17,5 @@
     <color name="flow_connected">#13976A</color>
     <color name="flow_reconnecting">#B7790A</color>
     <color name="flow_disconnected">#8B93A7</color>
+    <color name="flow_ping_bad">#C93A3A</color>
 </resources>

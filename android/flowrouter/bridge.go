@@ -118,6 +118,42 @@ func FlowRouterDrainDiagnostics() *C.char {
 	return C.CString(drainFlowRouterDiagnostics())
 }
 
+// flowRouterWarpState reports how the running router's WARP route ended up:
+// "ok" (a tunnel passed the data probe), "failed" (the last round found no
+// working endpoint), "idle" (not tried yet) or "unavailable" (no router or no
+// WARP profile).
+func flowRouterWarpState() string {
+	bridgeState.Lock()
+	router := bridgeState.router
+	bridgeState.Unlock()
+	if router == nil {
+		return "unavailable"
+	}
+	return router.warpState()
+}
+
+//export FlowRouterWarpState
+func FlowRouterWarpState() *C.char {
+	return C.CString(flowRouterWarpState())
+}
+
+// flowRouterWarpInfo returns warpInfo as JSON. With measurePing it blocks for
+// up to a few seconds while it measures the round trip through the tunnel.
+func flowRouterWarpInfo(measurePing bool) string {
+	bridgeState.Lock()
+	router := bridgeState.router
+	bridgeState.Unlock()
+	info := warpInfo{State: "unavailable", PingMs: -1}
+	if router != nil {
+		info = router.warpInfo(measurePing)
+	}
+	payload, err := json.Marshal(info)
+	if err != nil {
+		return `{"state":"unavailable","ping_ms":-1}`
+	}
+	return string(payload)
+}
+
 //export FlowRouterGenerateKeyPair
 func FlowRouterGenerateKeyPair() *C.char {
 	privateKey, err := ecdh.X25519().GenerateKey(rand.Reader)

@@ -12,8 +12,8 @@ android {
         applicationId = "local.flowcloud.android"
         minSdk = 24
         targetSdk = 34
-        versionCode = 31
-        versionName = "0.2.29"
+        versionCode = 32
+        versionName = "0.2.30"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -104,12 +104,18 @@ tasks.register<Exec>("runNdkBuild") {
 tasks.register<Exec>("buildFlowRouter") {
     group = "build"
     workingDir = rootDir
-    executable = "powershell.exe"
-    args("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "build-flowrouter.ps1")
+    if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) {
+        executable = "powershell.exe"
+        args("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "build-flowrouter.ps1")
+    } else {
+        executable = "bash"
+        args("build-flowrouter.sh")
+    }
     inputs.files(fileTree(rootProject.file("flowrouter")) {
         include("**/*.go", "go.mod", "go.sum")
     })
     inputs.file(rootProject.file("build-flowrouter.ps1"))
+    inputs.file(rootProject.file("build-flowrouter.sh"))
     outputs.dir(rootProject.file("flowrouter/build/jniLibs"))
 }
 

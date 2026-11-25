@@ -7,6 +7,14 @@ data class WireGuardKeyPair(
     val publicKey: String,
 )
 
+/** What the main screen shows about the WARP route; [pingMs] is -1 when unknown. */
+data class WarpRouteInfo(
+    val state: String,
+    val endpoint: String,
+    val transport: String,
+    val pingMs: Long,
+)
+
 class AutoRouteProxy {
     companion object {
         init {
@@ -52,6 +60,23 @@ class AutoRouteProxy {
 
     fun drainDiagnostics(): String = jniDrainDiagnostics()
 
+    /** WARP route state of the running router: ok, failed, idle or unavailable. */
+    fun warpState(): String = runCatching { jniWarpState() }.getOrDefault("unavailable")
+
+    /**
+     * The WARP endpoint in use and, with [measurePing], the round trip through
+     * the tunnel. Measuring blocks for up to a few seconds: call off the main thread.
+     */
+    fun warpInfo(measurePing: Boolean): WarpRouteInfo = runCatching {
+        val payload = JSONObject(jniWarpInfo(measurePing))
+        WarpRouteInfo(
+            state = payload.optString("state", "unavailable"),
+            endpoint = payload.optString("endpoint"),
+            transport = payload.optString("transport"),
+            pingMs = payload.optLong("ping_ms", -1L),
+        )
+    }.getOrDefault(WarpRouteInfo("unavailable", "", "", -1L))
+
     fun generateWireGuardKeyPair(): WireGuardKeyPair {
         val encoded = jniGenerateKeyPair()
         if (encoded.isBlank()) {
@@ -75,6 +100,12 @@ class AutoRouteProxy {
 
     /** Implemented in libflowrouter.so itself (flowrouter/bridge_jni_android.go). */
     private external fun jniSetOptions(options: String): Int
+
+    /** Implemented in libflowrouter.so itself (flowrouter/bridge_jni_android.go). */
+    private external fun jniWarpState(): String
+
+    /** Implemented in libflowrouter.so itself (flowrouter/bridge_jni_android.go). */
+    private external fun jniWarpInfo(measurePing: Boolean): String
     private external fun jniStop()
     private external fun jniSetPhysicalNetwork(networkHandle: Long)
     private external fun jniLastError(): String

@@ -10,4 +10,9 @@
     <string name="settings_routing_section">Маршрутизация через WARP</string>
     <string name="settings_more_section">Дополнительно</string>
     <string name="excluded_apps_short">Работают напрямую, мимо FlowCloud</string>
+    <string name="warp_info_label">Сервер WARP · %1$s</string>
+    <string name="warp_info_searching">Подбираем сервер WARP…</string>
+    <string name="warp_info_ping">%1$d мс</string>
+    <string name="warp_info_ping_measuring">…</string>
+    <string name="warp_info_ping_failed">нет ответа</string>
 </resources>

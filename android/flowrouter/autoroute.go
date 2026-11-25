@@ -24,6 +24,12 @@ type routerOptions struct {
 	// LearnTTLSeconds is how long a learned route is used before the default
 	// order is probed again.
 	LearnTTLSeconds int64 `json:"learn_ttl_seconds"`
+	// EndpointCacheFile persists WARP endpoint+profile pairs that passed the
+	// data probe, so the next start tries them first.
+	EndpointCacheFile string `json:"endpoint_cache_file"`
+	// NetworkKey identifies the physical network (transport and operator) the
+	// cached endpoints were measured on.
+	NetworkKey string `json:"network_key"`
 }
 
 func parseRouterOptions(text string) (routerOptions, error) {

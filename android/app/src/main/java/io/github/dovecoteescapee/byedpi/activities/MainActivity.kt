@@ -30,6 +30,11 @@ import io.github.dovecoteescapee.byedpi.BuildConfig
 import io.github.dovecoteescapee.byedpi.R
 import io.github.dovecoteescapee.byedpi.core.AppRelease
 import io.github.dovecoteescapee.byedpi.core.AppBypassRepository
+import io.github.dovecoteescapee.byedpi.core.AutoRouteProxy
+import io.github.dovecoteescapee.byedpi.core.WarpRouteInfo
+import io.github.dovecoteescapee.byedpi.services.activeTransport
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import io.github.dovecoteescapee.byedpi.core.AppUpdateRepository
 import io.github.dovecoteescapee.byedpi.core.BlocklistRepository
 import io.github.dovecoteescapee.byedpi.core.DiagnosticsRepository
@@ -58,6 +63,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var appBypass: AppBypassRepository
     private lateinit var appUpdates: AppUpdateRepository
     private var pendingTransport = TransportMode.Auto
+    private var currentTransport = TransportMode.Auto
+    private val warpRoute by lazy { AutoRouteProxy() }
     private var pendingUpdateFile: File? = null
     private var updateWorkRunning = false
 
@@ -65,6 +72,7 @@ class MainActivity : AppCompatActivity() {
         private val TAG: String = MainActivity::class.java.simpleName
         private const val AUTOMATIC_UPDATES_KEY = "automatic_update_checks"
         private const val PENDING_UPDATE_PATH = "pending_update_path"
+        private const val WARP_PING_INTERVAL_MS = 5_000L
 
         private fun collectLogs(context: Context): String? =
             try {
@@ -234,6 +242,11 @@ class MainActivity : AppCompatActivity() {
                 connectionStatus.collect { updateStatus() }
             }
         }
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                connectionStatus.collectLatest { (status, mode) -> followWarpInfo(status, mode) }
+            }
+        }
 
         binding.bottomNavigation.setOnItemSelectedListener { item ->
             val showSettings = item.itemId == R.id.navigation_settings
@@ -269,17 +282,18 @@ class MainActivity : AppCompatActivity() {
             checkForUpdates(manual = true, force = true)
         }
 
-        when (TransportMode.fromName(preferences.getString("transport_mode", null))) {
-            TransportMode.Auto -> binding.transportGroup.check(R.id.mode_auto)
-            TransportMode.ByeDpi -> binding.transportGroup.check(R.id.mode_byedpi)
-            TransportMode.Warp -> binding.transportGroup.check(R.id.mode_warp)
-        }
-        binding.transportGroup.setOnCheckedChangeListener { _, checkedId ->
-            if (checkedId != View.NO_ID) {
-                preferences.edit().putString("transport_mode", selectedTransport().name.lowercase()).apply()
-                updateDecision()
-                updateStatus()
+        currentTransport = preferences.transportMode()
+        val transportOptions = TransportOption.all(this)
+        binding.transportDropdown.setAdapter(TransportModeAdapter(this, transportOptions))
+        binding.transportDropdown.setText(getString(TransportOption.titleRes(currentTransport)), false)
+        binding.transportDropdown.setOnItemClickListener { _, _, position, _ ->
+            val mode = transportOptions[position].mode
+            if (mode != currentTransport) {
+                currentTransport = mode
+                preferences.saveTransportMode(mode)
             }
+            updateDecision()
+            updateStatus()
         }
         updateDecision()
         lifecycleScope.launch {
@@ -365,17 +379,57 @@ class MainActivity : AppCompatActivity() {
         ServiceManager.stop(this)
     }
 
+    /**
+     * Shows the WARP endpoint and the ping through it while the VPN runs in WARP
+     * mode. Cancelled and restarted by collectLatest on every status change.
+     */
+    private suspend fun followWarpInfo(status: AppStatus, mode: Mode) {
+        val shown = status == AppStatus.Running && mode == Mode.VPN && activeTransport == TransportMode.Warp
+        if (!shown) {
+            binding.warpInfo.visibility = View.GONE
+            return
+        }
+        binding.warpInfo.visibility = View.VISIBLE
+        renderWarpInfo(withContext(Dispatchers.IO) { warpRoute.warpInfo(measurePing = false) }, measuring = true)
+        while (true) {
+            renderWarpInfo(withContext(Dispatchers.IO) { warpRoute.warpInfo(measurePing = true) }, measuring = false)
+            delay(WARP_PING_INTERVAL_MS)
+        }
+    }
+
+    private fun renderWarpInfo(info: WarpRouteInfo, measuring: Boolean) {
+        if (info.endpoint.isBlank()) {
+            binding.warpInfoLabel.setText(R.string.warp_info_searching)
+            binding.warpInfoEndpoint.visibility = View.GONE
+            binding.warpInfoPing.visibility = View.GONE
+            return
+        }
+        binding.warpInfoLabel.text = getString(R.string.warp_info_label, info.transport)
+        binding.warpInfoEndpoint.visibility = View.VISIBLE
+        binding.warpInfoEndpoint.text = info.endpoint
+        binding.warpInfoPing.visibility = View.VISIBLE
+        val (text, color) = when {
+            measuring -> getString(R.string.warp_info_ping_measuring) to R.color.flow_text_secondary
+            info.pingMs < 0 -> getString(R.string.warp_info_ping_failed) to R.color.flow_ping_bad
+            else -> getString(R.string.warp_info_ping, info.pingMs) to when {
+                info.pingMs < 120 -> R.color.flow_connected
+                info.pingMs < 300 -> R.color.flow_reconnecting
+                else -> R.color.flow_ping_bad
+            }
+        }
+        binding.warpInfoPing.text = text
+        binding.warpInfoPing.setTextColor(ContextCompat.getColor(this, color))
+    }
+
     private fun updateStatus() {
         val (status, mode) = appStatus
 
         Log.i(TAG, "Updating status: $status, $mode")
         renderConnectionState(status)
         val canEdit = status == AppStatus.Halted
-        binding.transportGroup.isEnabled = canEdit
-        binding.transportGroup.alpha = if (canEdit) 1f else 0.5f
-        for (index in 0 until binding.transportGroup.childCount) {
-            binding.transportGroup.getChildAt(index).isEnabled = canEdit
-        }
+        binding.transportLayout.isEnabled = canEdit
+        binding.transportLayout.alpha = if (canEdit) 1f else 0.5f
+        if (!canEdit) binding.transportDropdown.dismissDropDown()
 
         when (status) {
             AppStatus.Halted -> {
@@ -472,27 +526,10 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun selectedTransport(): TransportMode = when (binding.transportGroup.checkedRadioButtonId) {
-        R.id.mode_byedpi -> TransportMode.ByeDpi
-        R.id.mode_warp -> TransportMode.Warp
-        else -> TransportMode.Auto
-    }
+    private fun selectedTransport(): TransportMode = currentTransport
 
     private fun updateDecision() {
-        when (selectedTransport()) {
-            TransportMode.ByeDpi -> {
-                binding.decisionText.visibility = View.VISIBLE
-                binding.decisionText.setText(R.string.manual_byedpi)
-            }
-            TransportMode.Warp -> {
-                binding.decisionText.visibility = View.VISIBLE
-                binding.decisionText.setText(R.string.manual_warp)
-            }
-            TransportMode.Auto -> {
-                binding.decisionText.visibility = View.VISIBLE
-                binding.decisionText.setText(R.string.manual_auto)
-            }
-        }
+        binding.transportLayout.helperText = getString(TransportOption.descriptionRes(currentTransport))
     }
 
     private fun saveSplitTunnelRules() {

@@ -22,6 +22,7 @@ type flowRouter struct {
 	warpConfig    warpConfig
 	options       routerOptions
 	routes        *routeCache
+	endpoints     *endpointCache
 	timings       autoTimings
 	dial          routeDialer
 
@@ -74,6 +75,7 @@ func newFlowRouter(listenAddress, byeDPIAddress, dnsRelayAddress, warpRulesText,
 		warpConfig:    config,
 		options:       options,
 		routes:        routes,
+		endpoints:     newEndpointCache(options.EndpointCacheFile),
 		timings:       defaultAutoTimings,
 		context:       ctx,
 		cancel:        cancel,
@@ -174,6 +176,7 @@ func (r *flowRouter) start() error {
 				r.warpConfig,
 				r.warpProbeTarget,
 				r.resolveWarpHost,
+				r.warpSelection(),
 			)
 		}
 		r.warpMutex.Unlock()
@@ -357,6 +360,58 @@ func legacyTimings(warpOnly bool) autoTimings {
 	}
 }
 
+func (r *flowRouter) warpState() string {
+	r.warpMutex.Lock()
+	defer r.warpMutex.Unlock()
+	switch {
+	case !r.warpConfig.available():
+		return "unavailable"
+	case r.warp != nil:
+		return "ok"
+	case r.warpErr != nil:
+		return "failed"
+	default:
+		return "idle"
+	}
+}
+
+// warpInfo is what the main screen shows about the WARP route.
+type warpInfo struct {
+	State     string `json:"state"`
+	Endpoint  string `json:"endpoint,omitempty"`
+	Transport string `json:"transport,omitempty"`
+	// PingMs is the TCP handshake time through the tunnel; -1 when not measured
+	// or failed.
+	PingMs int64 `json:"ping_ms"`
+}
+
+func (r *flowRouter) warpInfo(measurePing bool) warpInfo {
+	info := warpInfo{State: r.warpState(), PingMs: -1}
+	r.warpMutex.Lock()
+	tunnel := r.warp
+	r.warpMutex.Unlock()
+	if tunnel == nil {
+		return info
+	}
+	info.Endpoint = tunnel.endpoint
+	info.Transport = tunnel.transport
+	if measurePing {
+		ctx, cancel := context.WithTimeout(r.context, 4*time.Second)
+		defer cancel()
+		if rtt, err := tunnel.ping(ctx, 3); err == nil {
+			info.PingMs = rtt.Milliseconds()
+			if info.PingMs == 0 {
+				info.PingMs = 1
+			}
+		}
+	}
+	return info
+}
+
+func (r *flowRouter) warpSelection() warpSelection {
+	return warpSelection{cache: r.endpoints, networkKey: r.options.NetworkKey}
+}
+
 func (r *flowRouter) dialWarp(ctx context.Context, target string) (net.Conn, error) {
 	return r.dialWarpNetwork(ctx, "tcp", target)
 }
@@ -386,6 +441,7 @@ func (r *flowRouter) dialWarpNetwork(ctx context.Context, network, target string
 				r.warpConfig,
 				r.warpProbeTarget,
 				r.resolveWarpHost,
+				r.warpSelection(),
 			)
 		}
 	}

@@ -9,6 +9,8 @@ import io.github.dovecoteescapee.byedpi.data.AppStatus
 import io.github.dovecoteescapee.byedpi.data.START_ACTION
 import io.github.dovecoteescapee.byedpi.data.STOP_ACTION
 import io.github.dovecoteescapee.byedpi.data.TransportMode
+import io.github.dovecoteescapee.byedpi.utility.getPreferences
+import io.github.dovecoteescapee.byedpi.utility.transportMode
 
 object ServiceManager {
     private val TAG: String = ServiceManager::class.java.simpleName
@@ -16,7 +18,9 @@ object ServiceManager {
     fun start(
         context: Context,
         mode: Mode,
-        transport: TransportMode = TransportMode.ByeDpi,
+        // Starts without an explicit mode (quick settings tile, autostart) use the
+        // mode last chosen on the main screen.
+        transport: TransportMode = context.getPreferences().transportMode(),
     ) {
         setStatus(AppStatus.Connecting, mode)
         try {

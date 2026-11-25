@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	mrand "math/rand"
 	"net"
 	"net/netip"
 	"strconv"
@@ -27,6 +28,8 @@ type warpConfig struct {
 	AddressV4    string `json:"address_v4"`
 	AddressV6    string `json:"address_v6"`
 	PersistentKA int    `json:"persistent_keepalive"`
+	// Masque is the optional MASQUE device used when WireGuard is blocked.
+	Masque *masqueConfig `json:"masque,omitempty"`
 }
 
 func parseWarpConfig(value string) (warpConfig, error) {
@@ -52,6 +55,13 @@ func parseWarpConfig(value string) (warpConfig, error) {
 	if config.PersistentKA <= 0 {
 		config.PersistentKA = 25
 	}
+	if config.Masque != nil {
+		if _, err := config.Masque.tlsConfig(); err != nil || !config.Masque.available() {
+			// A broken MASQUE entry must not cost the WireGuard route.
+			flowRouterLogf("MASQUE fallback disabled: invalid device data: %v", err)
+			config.Masque = nil
+		}
+	}
 	return config, nil
 }
 
@@ -70,10 +80,60 @@ func decodeKey(value string) ([]byte, error) {
 	return decoded, nil
 }
 
+// warpTunnel is a userspace network reaching the internet through WARP, over
+// either AmneziaWG or MASQUE.
 type warpTunnel struct {
-	device   *device.Device
 	net      *netstack.Net
 	resolver func(context.Context, string) ([]netip.Addr, error)
+	closer   func()
+	// endpoint and transport describe the candidate that won selection; set by
+	// openWorkingWarp for display.
+	endpoint  string
+	transport string
+}
+
+// transportLabel is the user-facing protocol name of a candidate.
+func transportLabel(candidate warpCandidate) string {
+	switch candidate.transport {
+	case transportMasqueH3:
+		return "MASQUE H3"
+	case transportMasqueH2:
+		return "MASQUE H2"
+	default:
+		return "AmneziaWG"
+	}
+}
+
+// warpPingTarget is Cloudflare's resolver, served from the same edge as the
+// WARP endpoint, so a TCP handshake to it through the tunnel approximates the
+// round trip to the endpoint itself.
+const warpPingTarget = "1.1.1.1:443"
+
+// ping measures the TCP handshake time through the tunnel, the best of a few
+// attempts.
+func (t *warpTunnel) ping(ctx context.Context, attempts int) (time.Duration, error) {
+	best := time.Duration(-1)
+	var lastErr error
+	for index := 0; index < attempts; index++ {
+		started := time.Now()
+		connection, err := t.net.DialContext(ctx, "tcp", warpPingTarget)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		elapsed := time.Since(started)
+		_ = connection.Close()
+		if best < 0 || elapsed < best {
+			best = elapsed
+		}
+	}
+	if best < 0 {
+		if lastErr == nil {
+			lastErr = errors.New("no ping attempts")
+		}
+		return 0, lastErr
+	}
+	return best, nil
 }
 
 const (
@@ -88,8 +148,8 @@ const (
 )
 
 func (t *warpTunnel) close() {
-	if t != nil && t.device != nil {
-		t.device.Close()
+	if t != nil && t.closer != nil {
+		t.closer()
 	}
 }
 
@@ -131,63 +191,154 @@ func (t *warpTunnel) dialNetworkContext(ctx context.Context, network, target str
 	return nil, lastErr
 }
 
+// warpSelection carries what openWorkingWarp needs besides the profile: where
+// to remember winners and which network they were measured on.
+type warpSelection struct {
+	cache      *endpointCache
+	networkKey string
+	rng        *mrand.Rand
+}
+
 func openWorkingWarp(
 	ctx context.Context,
 	config warpConfig,
 	probeTarget string,
 	resolver func(context.Context, string) ([]netip.Addr, error),
+	selection warpSelection,
 ) (*warpTunnel, error) {
 	type attemptResult struct {
-		endpoint string
-		tunnel   *warpTunnel
-		err      error
+		candidate warpCandidate
+		tunnel    *warpTunnel
+		latency   time.Duration
+		err       error
 	}
 
-	candidates := endpointCandidates(config.Endpoint)
-	if len(candidates) == 0 {
+	rng := selection.rng
+	if rng == nil {
+		rng = mrand.New(mrand.NewSource(time.Now().UnixNano()))
+	}
+	cached := selection.cache.snapshot()
+	awgCandidates := buildWarpCandidates(config.Endpoint, cached, selection.networkKey, rng)
+	var masqueCandidates []warpCandidate
+	if config.Masque.available() {
+		masqueCandidates = buildMasqueCandidates(cached, selection.networkKey, rng)
+	}
+	total := len(awgCandidates) + len(masqueCandidates)
+	if total == 0 {
 		return nil, errors.New("start WARP route: no endpoint candidates")
 	}
+	cachedCount := 0
+	for _, candidate := range append(append([]warpCandidate(nil), awgCandidates...), masqueCandidates...) {
+		if candidate.source == sourceCached {
+			cachedCount++
+		}
+	}
+	flowRouterLogf(
+		"WARP endpoint round: %d AmneziaWG + %d MASQUE candidates (%d cached), network=%s",
+		len(awgCandidates), len(masqueCandidates), cachedCount, selection.networkKey,
+	)
+	started := time.Now()
 	attemptContext, cancelAttempts := context.WithCancel(ctx)
-	results := make(chan attemptResult, len(candidates))
-	for _, endpoint := range candidates {
-		go func(endpoint string) {
-			tunnel, err := openWarp(config, endpoint, resolver)
-			if err == nil {
-				probeContext, cancelProbe := context.WithTimeout(attemptContext, warpProbeTimeout)
-				err = probeWarpRoute(probeContext, tunnel, probeTarget)
-				cancelProbe()
+	results := make(chan attemptResult, total)
+	attempt := func(candidate warpCandidate) {
+		var tunnel *warpTunnel
+		var err error
+		if candidate.transport.isMasque() {
+			tunnel, err = openMasque(attemptContext, config.Masque, candidate.endpoint, candidate.transport, resolver)
+		} else {
+			tunnel, err = openWarp(config, candidate.endpoint, candidate.profile, resolver)
+		}
+		if err == nil {
+			probeContext, cancelProbe := context.WithTimeout(attemptContext, warpProbeTimeout)
+			err = probeWarpRoute(probeContext, tunnel, probeTarget)
+			cancelProbe()
+		}
+		if err != nil && tunnel != nil {
+			tunnel.close()
+			tunnel = nil
+		}
+		results <- attemptResult{candidate: candidate, tunnel: tunnel, latency: time.Since(started), err: err}
+	}
+	for _, candidate := range awgCandidates {
+		go attempt(candidate)
+	}
+	// MASQUE joins after a head start for AmneziaWG, or at once when every
+	// AmneziaWG candidate has already failed.
+	awgExhausted := make(chan struct{})
+	if len(awgCandidates) == 0 {
+		close(awgExhausted)
+	}
+	if len(masqueCandidates) > 0 {
+		go func() {
+			timer := time.NewTimer(masqueStartDelay)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+			case <-awgExhausted:
+			case <-attemptContext.Done():
+				for _, candidate := range masqueCandidates {
+					results <- attemptResult{candidate: candidate, err: attemptContext.Err()}
+				}
+				return
 			}
-			if err != nil && tunnel != nil {
-				tunnel.close()
-				tunnel = nil
+			flowRouterLogf("WARP endpoint round: starting MASQUE candidates after %s", time.Since(started).Round(time.Millisecond))
+			for _, candidate := range masqueCandidates {
+				go attempt(candidate)
 			}
-			results <- attemptResult{endpoint: endpoint, tunnel: tunnel, err: err}
-		}(endpoint)
+		}()
+	}
+	// drain closes tunnels that finish after the round is decided.
+	drain := func(remaining int, keepBackups bool) {
+		go func() {
+			for index := 0; index < remaining; index++ {
+				unused := <-results
+				if unused.tunnel != nil {
+					if keepBackups {
+						// It passed before the cancel reached it: keep it as a backup.
+						selection.cache.remember(selection.networkKey, unused.candidate, unused.latency)
+					}
+					unused.tunnel.close()
+				}
+			}
+		}()
 	}
 
 	var lastErr error
-	for completed := 0; completed < len(candidates); completed++ {
+	awgFailed := 0
+	for completed := 0; completed < total; completed++ {
 		select {
 		case result := <-results:
 			if result.err == nil && result.tunnel != nil {
 				cancelAttempts()
-				flowRouterLogf("WARP endpoint selected: %s (YouTube data probe passed)", result.endpoint)
-				remaining := len(candidates) - completed - 1
-				go func() {
-					for index := 0; index < remaining; index++ {
-						unused := <-results
-						if unused.tunnel != nil {
-							unused.tunnel.close()
-						}
-					}
-				}()
+				flowRouterLogf(
+					"WARP endpoint selected: %s [%s, %s] in %s (YouTube data probe passed)",
+					result.candidate.endpoint, result.candidate.source, describeCandidate(result.candidate),
+					result.latency.Round(time.Millisecond),
+				)
+				selection.cache.remember(selection.networkKey, result.candidate, result.latency)
+				drain(total-completed-1, true)
+				result.tunnel.endpoint = result.candidate.endpoint
+				result.tunnel.transport = transportLabel(result.candidate)
 				return result.tunnel, nil
 			}
 			lastErr = result.err
-			flowRouterLogf("WARP endpoint rejected: %s: %v", result.endpoint, result.err)
+			if result.candidate.source == sourceCached {
+				selection.cache.fail(selection.networkKey, result.candidate)
+			}
+			if !result.candidate.transport.isMasque() {
+				awgFailed++
+				if awgFailed == len(awgCandidates) {
+					close(awgExhausted)
+				}
+			}
+			flowRouterLogf(
+				"WARP endpoint rejected: %s [%s, %s]: %v",
+				result.candidate.endpoint, result.candidate.source, describeCandidate(result.candidate), result.err,
+			)
 		case <-ctx.Done():
 			cancelAttempts()
-			flowRouterLogf("WARP endpoint scan timed out after %d/%d results: %v", completed, len(candidates), ctx.Err())
+			flowRouterLogf("WARP endpoint scan timed out after %d/%d results: %v", completed, total, ctx.Err())
+			drain(total-completed, false)
 			return nil, fmt.Errorf("start WARP route: %w", ctx.Err())
 		}
 	}
@@ -196,6 +347,13 @@ func openWorkingWarp(
 		lastErr = errors.New("no usable WARP endpoint")
 	}
 	return nil, fmt.Errorf("start WARP route: %w", lastErr)
+}
+
+func describeCandidate(candidate warpCandidate) string {
+	if candidate.transport.isMasque() {
+		return candidate.transport.String()
+	}
+	return "awg " + candidate.profile.String()
 }
 
 func probeWarpRoute(ctx context.Context, tunnel *warpTunnel, target string) error {
@@ -231,8 +389,12 @@ func probeWarpRoute(ctx context.Context, tunnel *warpTunnel, target string) erro
 func openWarp(
 	config warpConfig,
 	endpoint string,
+	profile awgProfile,
 	resolver func(context.Context, string) ([]netip.Addr, error),
 ) (*warpTunnel, error) {
+	if err := profile.validate(); err != nil {
+		return nil, fmt.Errorf("AmneziaWG profile %s: %w", profile.Name, err)
+	}
 	privateKey, _ := decodeKey(config.PrivateKey)
 	publicKey, _ := decodeKey(config.PublicKey)
 	// Android's outer VPN is IPv4-only on mobile data. Keeping the inner WARP
@@ -266,27 +428,17 @@ func openWarp(
 		bind,
 		device.NewLogger(device.LogLevelSilent, "FlowCloudAuto"),
 	)
-	uapi := strings.Join([]string{
-		"private_key=" + hex.EncodeToString(privateKey),
-		"jc=" + strconv.Itoa(warpJunkCount),
-		"jmin=" + strconv.Itoa(warpJunkMin),
-		"jmax=" + strconv.Itoa(warpJunkMax),
-		"s1=0",
-		"s2=0",
-		"s3=0",
-		"s4=0",
-		"h1=1",
-		"h2=2",
-		"h3=3",
-		"h4=4",
-		"i1=" + warpCPSPacket,
+	lines := []string{"private_key=" + hex.EncodeToString(privateKey)}
+	lines = append(lines, profile.uapi()...)
+	lines = append(lines,
 		"replace_peers=true",
-		"public_key=" + hex.EncodeToString(publicKey),
-		"endpoint=" + endpoint,
+		"public_key="+hex.EncodeToString(publicKey),
+		"endpoint="+endpoint,
 		"replace_allowed_ips=true",
 		"allowed_ip=0.0.0.0/0",
-		"persistent_keepalive_interval=" + strconv.Itoa(config.PersistentKA),
-	}, "\n") + "\n\n"
+		"persistent_keepalive_interval="+strconv.Itoa(config.PersistentKA),
+	)
+	uapi := strings.Join(lines, "\n") + "\n\n"
 	if err = dev.IpcSet(uapi); err != nil {
 		dev.Close()
 		return nil, err
@@ -296,45 +448,5 @@ func openWarp(
 		return nil, err
 	}
 	bindWireGuardSockets(bind)
-	return &warpTunnel{device: dev, net: tunnelNet, resolver: resolver}, nil
-}
-
-func endpointCandidates(value string) []string {
-	host, portValue, err := net.SplitHostPort(strings.TrimSpace(value))
-	if err != nil {
-		return []string{value}
-	}
-	originalPort, _ := strconv.Atoi(portValue)
-	ports := []int{originalPort, 2408, 500, 1701, 4500, 943}
-	// WARP anycast addresses can land on different Cloudflare edge nodes. Some
-	// nodes pass the WireGuard handshake but filter the requested sites, so use
-	// samples from both standard WARP endpoint pools and validate actual data.
-	hosts := []string{
-		host,
-		"162.159.192.5", "162.159.192.1", "162.159.193.10", "162.159.194.20", "162.159.195.30",
-		"162.159.196.40", "162.159.197.50", "162.159.198.60", "162.159.199.70",
-		"188.114.96.10", "188.114.98.58", "188.114.100.30", "188.114.103.40",
-		"188.114.106.50", "188.114.110.60",
-	}
-	seen := make(map[string]struct{})
-	result := make([]string, 0, 24)
-	appendCandidate := func(candidateHost string, port int) {
-		if port <= 0 || port > 65535 || len(result) >= 24 {
-			return
-		}
-		candidate := net.JoinHostPort(candidateHost, strconv.Itoa(port))
-		if _, exists := seen[candidate]; exists {
-			return
-		}
-		seen[candidate] = struct{}{}
-		result = append(result, candidate)
-	}
-	for _, port := range ports {
-		appendCandidate(host, port)
-	}
-	for index, candidateHost := range hosts[1:] {
-		appendCandidate(candidateHost, 2408)
-		appendCandidate(candidateHost, []int{500, 1701, 4500, 943}[index%4])
-	}
-	return result
+	return &warpTunnel{net: tunnelNet, resolver: resolver, closer: dev.Close}, nil
 }

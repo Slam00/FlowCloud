@@ -94,68 +94,90 @@
                     android:textSize="14sp"
                     tools:text="Трафик идёт напрямую" />
 
-                <com.google.android.material.card.MaterialCardView
-                    style="@style/Widget.FlowCloud.Card"
+                <com.google.android.material.textfield.TextInputLayout
+                    android:id="@+id/transport_layout"
+                    style="@style/Widget.FlowCloud.Dropdown"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="28dp">
+                    android:layout_marginTop="28dp"
+                    android:hint="@string/connection_mode"
+                    tools:helperText="@string/manual_auto">
 
-                    <LinearLayout
+                    <com.google.android.material.textfield.MaterialAutoCompleteTextView
+                        android:id="@+id/transport_dropdown"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:orientation="vertical"
-                        android:padding="16dp">
+                        android:fontFamily="sans-serif-medium"
+                        android:inputType="none"
+                        android:textColor="@color/flow_text"
+                        android:textSize="16sp"
+                        tools:text="@string/mode_auto" />
+                </com.google.android.material.textfield.TextInputLayout>
+
+                <Space
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_weight="1"
+                    android:minHeight="16dp" />
+
+                <LinearLayout
+                    android:id="@+id/warp_info"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_warp_info"
+                    android:gravity="center_vertical"
+                    android:minHeight="64dp"
+                    android:orientation="horizontal"
+                    android:paddingStart="16dp"
+                    android:paddingTop="10dp"
+                    android:paddingEnd="12dp"
+                    android:paddingBottom="10dp"
+                    android:visibility="gone"
+                    tools:visibility="visible">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
 
                         <TextView
+                            android:id="@+id/warp_info_label"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="@string/connection_mode"
                             android:textColor="@color/flow_text_secondary"
-                            android:textSize="13sp"
-                            android:textStyle="bold" />
-
-                        <RadioGroup
-                            android:id="@+id/transport_group"
-                            android:layout_width="match_parent"
-                            android:layout_height="48dp"
-                            android:layout_marginTop="12dp"
-                            android:background="@drawable/bg_segment"
-                            android:checkedButton="@id/mode_auto"
-                            android:orientation="horizontal"
-                            android:padding="4dp">
-
-                            <RadioButton
-                                android:id="@+id/mode_auto"
-                                style="@style/Widget.FlowCloud.Segment"
-                                android:text="@string/mode_auto" />
-
-                            <RadioButton
-                                android:id="@+id/mode_byedpi"
-                                style="@style/Widget.FlowCloud.Segment"
-                                android:layout_marginStart="4dp"
-                                android:text="@string/mode_byedpi" />
-
-                            <RadioButton
-                                android:id="@+id/mode_warp"
-                                style="@style/Widget.FlowCloud.Segment"
-                                android:layout_marginStart="4dp"
-                                android:text="@string/mode_warp" />
-                        </RadioGroup>
+                            android:textSize="12sp"
+                            tools:text="Сервер WARP · AmneziaWG" />
 
                         <TextView
-                            android:id="@+id/decision_text"
-                            android:layout_width="match_parent"
+                            android:id="@+id/warp_info_endpoint"
+                            android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:layout_marginTop="12dp"
-                            android:drawablePadding="8dp"
-                            android:lineSpacingExtra="2dp"
-                            android:textColor="@color/flow_text_secondary"
-                            android:textSize="13sp"
-                            app:drawableStartCompat="@drawable/ic_info_16"
-                            app:drawableTint="@color/flow_text_secondary"
-                            tools:text="@string/manual_auto" />
+                            android:layout_marginTop="2dp"
+                            android:ellipsize="middle"
+                            android:fontFamily="sans-serif-medium"
+                            android:fontFeatureSettings="tnum"
+                            android:singleLine="true"
+                            android:textColor="@color/flow_text"
+                            android:textSize="15sp"
+                            tools:text="162.159.192.5:2408" />
                     </LinearLayout>
-                </com.google.android.material.card.MaterialCardView>
+
+                    <TextView
+                        android:id="@+id/warp_info_ping"
+                        android:layout_width="wrap_content"
+                        android:layout_height="28dp"
+                        android:layout_marginStart="12dp"
+                        android:background="@drawable/bg_ping"
+                        android:fontFamily="sans-serif-medium"
+                        android:gravity="center"
+                        android:minWidth="64dp"
+                        android:paddingStart="10dp"
+                        android:paddingEnd="10dp"
+                        android:textColor="@color/flow_connected"
+                        android:textSize="13sp"
+                        tools:text="48 мс" />
+                </LinearLayout>
             </LinearLayout>
         </ScrollView>
 

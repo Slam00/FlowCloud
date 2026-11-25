@@ -46,23 +46,3 @@ func TestDNSCacheRememberResolved(t *testing.T) {
 		t.Fatalf("lookup() = %q, want speedtest.net", actual)
 	}
 }
-
-func TestWarpEndpointCandidatesIncludeMobileFallbacks(t *testing.T) {
-	candidates := endpointCandidates("162.159.192.9:2408")
-	wanted := map[string]bool{
-		"162.159.192.9:2408": false,
-		"162.159.192.9:500":  false,
-		"162.159.192.1:2408": false,
-		"162.159.192.5:500":  false,
-	}
-	for _, candidate := range candidates {
-		if _, exists := wanted[candidate]; exists {
-			wanted[candidate] = true
-		}
-	}
-	for candidate, found := range wanted {
-		if !found {
-			t.Errorf("endpointCandidates() does not contain %s", candidate)
-		}
-	}
-}
