@@ -344,6 +344,29 @@ func (c *endpointCache) fail(network string, candidate warpCandidate) {
 	}
 }
 
+// drop evicts a pair that stopped passing traffic after it was selected.
+func (c *endpointCache) drop(network string, candidate warpCandidate) {
+	if c == nil {
+		return
+	}
+	c.mutex.Lock()
+	key := cacheKey(network, candidate.transport, candidate.endpoint)
+	changed := false
+	kept := c.entries[:0]
+	for _, entry := range c.entries {
+		if entry.key() == key {
+			changed = true
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	c.entries = kept
+	c.mutex.Unlock()
+	if changed {
+		c.save()
+	}
+}
+
 func (c *endpointCache) save() {
 	if c == nil || c.path == "" {
 		return

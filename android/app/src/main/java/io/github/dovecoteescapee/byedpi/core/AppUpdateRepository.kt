@@ -36,10 +36,10 @@ class AppUpdateRepository(private val context: Context) {
     companion object {
         private const val RELEASE_API =
             "https://api.github.com/repos/Slam00/FlowCloud/releases/latest"
-        // Automatic checks run on every app launch; this only absorbs activity
-        // re-creation (rotation, theme change) and stays far below GitHub's
-        // unauthenticated limit of 60 requests per hour.
-        internal const val CHECK_INTERVAL_MS = 60L * 60L * 1_000L
+        // Automatic checks run whenever the app comes to the foreground; this
+        // only absorbs quick switches and re-creation (rotation, theme change)
+        // and stays far below GitHub's unauthenticated limit of 60 requests per hour.
+        internal const val CHECK_INTERVAL_MS = 10L * 60L * 1_000L
         private const val LAST_CHECK_KEY = "last_check"
         private const val DISMISSED_VERSION_KEY = "dismissed_version"
         private const val MAX_APK_SIZE = 250L * 1024L * 1024L

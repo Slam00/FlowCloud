@@ -35,8 +35,15 @@ type flowRouter struct {
 	warpErr         error
 	warpTried       time.Time
 	warpProbeTarget string
-	closeOnce       sync.Once
-	wait            sync.WaitGroup
+	// Health watching and background replacement (warphealth.go).
+	warpReselecting  bool
+	warpDialFailures int
+	warpCheck        chan struct{}
+	health           warpHealthSettings
+	pingWarp         func(context.Context, *warpTunnel) error
+	openWarpRoute    func(context.Context) (*warpTunnel, error)
+	closeOnce        sync.Once
+	wait             sync.WaitGroup
 }
 
 const warpRetryInterval = 30 * time.Second
@@ -81,6 +88,10 @@ func newFlowRouter(listenAddress, byeDPIAddress, dnsRelayAddress, warpRulesText,
 		cancel:        cancel,
 	}
 	router.dial = router.dialRouteDefault
+	router.warpCheck = make(chan struct{}, 1)
+	router.health = defaultWarpHealth
+	router.pingWarp = router.defaultPingWarp
+	router.openWarpRoute = router.defaultOpenWarpRoute
 	return router, nil
 }
 
@@ -188,6 +199,11 @@ func (r *flowRouter) start() error {
 				return r.warpErr
 			}
 		}
+		r.wait.Add(1)
+		go func() {
+			defer r.wait.Done()
+			r.watchWarp()
+		}()
 	}
 	r.wait.Add(1)
 	go func() {
@@ -366,6 +382,8 @@ func (r *flowRouter) warpState() string {
 	switch {
 	case !r.warpConfig.available():
 		return "unavailable"
+	case r.warpReselecting:
+		return "searching"
 	case r.warp != nil:
 		return "ok"
 	case r.warpErr != nil:
@@ -418,9 +436,14 @@ func (r *flowRouter) dialWarp(ctx context.Context, target string) (net.Conn, err
 
 func (r *flowRouter) dialWarpNetwork(ctx context.Context, network, target string) (net.Conn, error) {
 	r.warpMutex.Lock()
-	defer r.warpMutex.Unlock()
 	if !r.warpConfig.available() {
+		r.warpMutex.Unlock()
 		return nil, errors.New("WARP configuration is unavailable")
+	}
+	if r.warpReselecting {
+		// Fail fast: Auto mode falls back to ByeDPI until the new tunnel is up.
+		r.warpMutex.Unlock()
+		return nil, errWarpReselecting
 	}
 	if r.warpErr != nil && time.Since(r.warpTried) >= warpRetryInterval {
 		r.warpErr = nil
@@ -446,12 +469,20 @@ func (r *flowRouter) dialWarpNetwork(ctx context.Context, network, target string
 		}
 	}
 	if r.warpErr != nil {
-		return nil, r.warpErr
+		err := r.warpErr
+		r.warpMutex.Unlock()
+		return nil, err
 	}
-	if r.warp == nil {
+	tunnel := r.warp
+	r.warpMutex.Unlock()
+	if tunnel == nil {
 		return nil, errors.New("WARP is unavailable")
 	}
-	return r.warp.dialNetworkContext(ctx, network, target)
+	// The dial runs without the lock so WARP connections do not queue behind
+	// each other or behind a slow dial through a dying tunnel.
+	connection, err := tunnel.dialNetworkContext(ctx, network, target)
+	r.noteWarpDial(tunnel, err)
+	return connection, err
 }
 
 func (r *flowRouter) exchangeDNSOverWarp(target socksTarget, query []byte) ([]byte, error) {

@@ -90,6 +90,7 @@ type warpTunnel struct {
 	// openWorkingWarp for display.
 	endpoint  string
 	transport string
+	candidate warpCandidate
 }
 
 // transportLabel is the user-facing protocol name of a candidate.
@@ -319,6 +320,7 @@ func openWorkingWarp(
 				drain(total-completed-1, true)
 				result.tunnel.endpoint = result.candidate.endpoint
 				result.tunnel.transport = transportLabel(result.candidate)
+				result.tunnel.candidate = result.candidate
 				return result.tunnel, nil
 			}
 			lastErr = result.err

@@ -65,6 +65,7 @@ class MainActivity : AppCompatActivity() {
     private var pendingTransport = TransportMode.Auto
     private var currentTransport = TransportMode.Auto
     private val warpRoute by lazy { AutoRouteProxy() }
+    private var updateDialog: androidx.appcompat.app.AlertDialog? = null
     private var pendingUpdateFile: File? = null
     private var updateWorkRunning = false
 
@@ -301,10 +302,6 @@ class MainActivity : AppCompatActivity() {
                 .onSuccess { updateDecision() }
                 .onFailure { Log.w(TAG, "Blocklist update failed; using bundled lists", it) }
         }
-        if (binding.automaticUpdatesSwitch.isChecked) {
-            checkForUpdates(manual = false, force = false)
-        }
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(
                 this,
@@ -318,6 +315,11 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         updateStatus()
+        // Also when the app returns from the background: the activity is often
+        // kept alive, so a check only in onCreate would rarely run.
+        if (binding.automaticUpdatesSwitch.isChecked && updateDialog?.isShowing != true) {
+            checkForUpdates(manual = false, force = false)
+        }
     }
 
     override fun onDestroy() {
@@ -697,11 +699,13 @@ class MainActivity : AppCompatActivity() {
                 append(release.notes)
             }
         }
-        MaterialAlertDialogBuilder(this)
+        if (updateDialog?.isShowing == true) return
+        updateDialog = MaterialAlertDialogBuilder(this)
             .setTitle(getString(R.string.update_available_title, release.version))
             .setMessage(message)
             .setNegativeButton(android.R.string.cancel) { _, _ -> appUpdates.dismiss(release.version) }
             .setPositiveButton(R.string.download_update) { _, _ -> downloadUpdate(release) }
+            .setOnDismissListener { updateDialog = null }
             .show()
     }
 
