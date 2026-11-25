@@ -386,7 +386,9 @@ class MainActivity : AppCompatActivity() {
      * mode. Cancelled and restarted by collectLatest on every status change.
      */
     private suspend fun followWarpInfo(status: AppStatus, mode: Mode) {
-        val shown = status == AppStatus.Running && mode == Mode.VPN && activeTransport == TransportMode.Warp
+        val transport = activeTransport
+        val shown = status == AppStatus.Running && mode == Mode.VPN &&
+            (transport == TransportMode.Warp || transport == TransportMode.Auto)
         if (!shown) {
             binding.warpInfo.visibility = View.GONE
             return
@@ -400,12 +402,29 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun renderWarpInfo(info: WarpRouteInfo, measuring: Boolean) {
-        if (info.endpoint.isBlank()) {
-            binding.warpInfoLabel.setText(R.string.warp_info_searching)
-            binding.warpInfoEndpoint.visibility = View.GONE
-            binding.warpInfoPing.visibility = View.GONE
+        if (info.state == "unavailable") {
+            // Auto mode without a WARP profile: there is nothing to show.
+            binding.warpInfo.visibility = View.GONE
             return
         }
+        binding.warpInfo.visibility = View.VISIBLE
+        if (info.endpoint.isBlank()) {
+            binding.warpInfoPing.visibility = View.GONE
+            if (info.state == "failed") {
+                binding.warpInfoLabel.setText(R.string.warp_info_server)
+                binding.warpInfoEndpoint.visibility = View.VISIBLE
+                binding.warpInfoEndpoint.setText(
+                    if (activeTransport == TransportMode.Auto) R.string.warp_info_failed_auto
+                    else R.string.warp_info_failed,
+                )
+                binding.warpInfoEndpoint.setTextColor(ContextCompat.getColor(this, R.color.flow_text_secondary))
+            } else {
+                binding.warpInfoLabel.setText(R.string.warp_info_searching)
+                binding.warpInfoEndpoint.visibility = View.GONE
+            }
+            return
+        }
+        binding.warpInfoEndpoint.setTextColor(ContextCompat.getColor(this, R.color.flow_text))
         binding.warpInfoLabel.text = getString(R.string.warp_info_label, info.transport)
         binding.warpInfoEndpoint.visibility = View.VISIBLE
         binding.warpInfoEndpoint.text = info.endpoint
