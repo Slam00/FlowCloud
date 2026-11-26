@@ -243,9 +243,11 @@ class ByeDpiVpnService : LifecycleVpnService() {
         }
 
         val preferences = getByeDpiPreferences().let { base ->
-            if (selectedTransport == TransportMode.Auto) {
-                // Auto mode retries failing destinations with further desync
-                // strategies inside byedpi before the route engine gives up on it.
+            if (selectedTransport == TransportMode.Auto || selectedTransport == TransportMode.ByeDpi) {
+                // Failing destinations are retried with further desync strategies
+                // inside byedpi: in Auto mode before the route engine gives up on
+                // ByeDPI, in DPI mode because there is no other route. Hosts the
+                // user's strategy opens never reach these groups.
                 ByeDpiAutoStrategies.forAutoMode(base, autoCacheDir()).also {
                     DiagnosticsRepository.append(
                         applicationContext,
@@ -342,9 +344,9 @@ class ByeDpiVpnService : LifecycleVpnService() {
                 ""
             } else {
                 val registration = runCatching {
-                    WarpRegistrationRepository(applicationContext)
-                        .getOrRegister(byeDpiPort)
-                        .toRouterJson()
+                    val repository = WarpRegistrationRepository(applicationContext)
+                    val main = repository.getOrRegister(byeDpiPort)
+                    main.toRouterJson(probe = repository.getOrRegisterProbe(byeDpiPort))
                 }
                 registration.onFailure {
                     Log.w(TAG, "WARP registration is unavailable; using ByeDPI fallback", it)

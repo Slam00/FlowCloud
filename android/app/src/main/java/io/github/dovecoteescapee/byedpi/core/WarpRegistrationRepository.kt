@@ -68,7 +68,12 @@ data class WarpConfig(
     val token: String = "",
     val masque: MasqueConfig? = null,
 ) {
-    fun toRouterJson(): String = JSONObject()
+    /** [probe], when present, is the device the route engine tests endpoints with. */
+    fun toRouterJson(probe: WarpConfig? = null): String = routerJsonObject()
+        .apply { probe?.let { put("probe", it.routerJsonObject()) } }
+        .toString()
+
+    private fun routerJsonObject(): JSONObject = JSONObject()
         .put("private_key", privateKey)
         .put("peer_public_key", peerPublicKey)
         .put("endpoint", endpoint)
@@ -76,7 +81,6 @@ data class WarpConfig(
         .put("address_v6", addressV6)
         .put("persistent_keepalive", 25)
         .apply { masque?.let { put("masque", it.toRouterJson()) } }
-        .toString()
 
     fun toStorageJson(): String = JSONObject()
         .put("private_key", privateKey)
@@ -225,6 +229,22 @@ class WarpRegistrationRepository(context: Context) {
         store.save(result)
         Log.i(TAG, "WARP profile registered successfully")
         result
+    }
+
+    /**
+     * The probe device, registered on first use. Best effort: without it the
+     * route engine tests endpoints with the main key, as before.
+     */
+    fun getOrRegisterProbe(byeDpiPort: Int): WarpConfig? = synchronized(lock) {
+        store.loadProbe()?.let { return it }
+        runCatching { register(byeDpiPort) }
+            .onSuccess { probe ->
+                runCatching { store.saveProbe(probe) }
+                    .onFailure { Log.w(TAG, "WARP probe profile not saved", it) }
+                Log.i(TAG, "WARP probe device registered")
+            }
+            .onFailure { Log.w(TAG, "WARP probe device registration failed; testing with the main key", it) }
+            .getOrNull()
     }
 
     private fun register(byeDpiPort: Int): WarpConfig {

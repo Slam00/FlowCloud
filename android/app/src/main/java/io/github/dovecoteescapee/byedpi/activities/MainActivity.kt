@@ -427,7 +427,7 @@ class MainActivity : AppCompatActivity() {
         binding.warpInfoEndpoint.setTextColor(ContextCompat.getColor(this, R.color.flow_text))
         binding.warpInfoLabel.text = getString(R.string.warp_info_label, info.transport)
         binding.warpInfoEndpoint.visibility = View.VISIBLE
-        binding.warpInfoEndpoint.text = info.endpoint
+        binding.warpInfoEndpoint.text = if (info.colo.isBlank()) info.endpoint else "${info.endpoint} · ${info.coloName}"
         binding.warpInfoPing.visibility = View.VISIBLE
         val (text, color) = when {
             measuring -> getString(R.string.warp_info_ping_measuring) to R.color.flow_text_secondary

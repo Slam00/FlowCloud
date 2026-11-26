@@ -13,7 +13,24 @@ data class WarpRouteInfo(
     val endpoint: String,
     val transport: String,
     val pingMs: Long,
-)
+    /** Cloudflare location (IATA code) WARP exits from, "" when unknown. */
+    val colo: String = "",
+    /** Flows the provider cut and the route engine revived from a new port. */
+    val reconnects: Int = 0,
+) {
+    /** The exit city in Russian, or the code itself for unlisted locations. */
+    val coloName: String
+        get() = COLO_NAMES[colo.uppercase()] ?: colo
+
+    private companion object {
+        val COLO_NAMES = mapOf(
+            "DME" to "Москва", "LED" to "Санкт-Петербург", "ARN" to "Стокгольм",
+            "HEL" to "Хельсинки", "WAW" to "Варшава", "FRA" to "Франкфурт",
+            "AMS" to "Амстердам", "RIX" to "Рига", "TLL" to "Таллин",
+            "VNO" to "Вильнюс", "IST" to "Стамбул", "KBP" to "Киев",
+        )
+    }
+}
 
 class AutoRouteProxy {
     companion object {
@@ -74,6 +91,8 @@ class AutoRouteProxy {
             endpoint = payload.optString("endpoint"),
             transport = payload.optString("transport"),
             pingMs = payload.optLong("ping_ms", -1L),
+            colo = payload.optString("colo"),
+            reconnects = payload.optInt("reconnects", 0),
         )
     }.getOrDefault(WarpRouteInfo("unavailable", "", "", -1L))
 

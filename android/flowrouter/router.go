@@ -38,6 +38,8 @@ type flowRouter struct {
 	// Health watching and background replacement (warphealth.go).
 	warpReselecting  bool
 	warpDialFailures int
+	// warpReconnects counts WARP flows revived from a new source port.
+	warpReconnects int
 	warpCheck        chan struct{}
 	health           warpHealthSettings
 	pingWarp         func(context.Context, *warpTunnel) error
@@ -173,7 +175,7 @@ func (r *flowRouter) start() error {
 		return errors.New("WARP mode requires a registered WARP profile")
 	}
 	if r.warpConfig.available() {
-		probeContext, cancelProbe := context.WithTimeout(r.context, 9*time.Second)
+		probeContext, cancelProbe := context.WithTimeout(r.context, 15*time.Second)
 		probeAddresses, resolveErr := r.resolveWarpHost(probeContext, "www.youtube.com")
 		r.warpMutex.Lock()
 		r.warpTried = time.Now()
@@ -401,6 +403,10 @@ type warpInfo struct {
 	// PingMs is the TCP handshake time through the tunnel; -1 when not measured
 	// or failed.
 	PingMs int64 `json:"ping_ms"`
+	// Colo is the Cloudflare location WARP exits from; Reconnects counts
+	// flows revived from a new source port.
+	Colo       string `json:"colo,omitempty"`
+	Reconnects int    `json:"reconnects,omitempty"`
 }
 
 func (r *flowRouter) warpInfo(measurePing bool) warpInfo {
@@ -413,6 +419,10 @@ func (r *flowRouter) warpInfo(measurePing bool) warpInfo {
 	}
 	info.Endpoint = tunnel.endpoint
 	info.Transport = tunnel.transport
+	info.Colo = tunnel.colo
+	r.warpMutex.Lock()
+	info.Reconnects = r.warpReconnects
+	r.warpMutex.Unlock()
 	if measurePing {
 		ctx, cancel := context.WithTimeout(r.context, 4*time.Second)
 		defer cancel()

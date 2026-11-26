@@ -95,6 +95,7 @@ class WarpProfileStore(
     companion object {
         private const val TAG = "WarpProfileStore"
         private const val KEY_PROFILE = "profile_v2"
+        private const val KEY_PROBE = "probe_v1"
         private val LEGACY_KEYS = listOf(
             "private_key", "peer_public_key", "endpoint", "address_v4", "address_v6",
         )
@@ -124,8 +125,30 @@ class WarpProfileStore(
         }
     }
 
+    /**
+     * The second WARP device the route engine tests endpoints with, so test
+     * handshakes never take the session of the live tunnel. Stored like the
+     * main profile; a missing or unreadable one is simply registered again.
+     */
+    fun loadProbe(): WarpConfig? =
+        preferences.getString(KEY_PROBE, null)?.let { envelope ->
+            runCatching {
+                WarpConfig.fromStorageJson(String(cipher.decrypt(envelope), Charsets.UTF_8))
+            }.onFailure {
+                Log.w(TAG, "Encrypted WARP probe profile is unreadable; it will be re-registered", it)
+                preferences.edit().remove(KEY_PROBE).commit()
+            }.getOrNull()
+        }
+
+    fun saveProbe(config: WarpConfig) {
+        val envelope = cipher.encrypt(config.toStorageJson().toByteArray(Charsets.UTF_8))
+        if (!preferences.edit().putString(KEY_PROBE, envelope).commit()) {
+            throw IllegalStateException("WARP probe profile could not be saved")
+        }
+    }
+
     fun clear() {
-        val editor = preferences.edit().remove(KEY_PROFILE)
+        val editor = preferences.edit().remove(KEY_PROFILE).remove(KEY_PROBE)
         LEGACY_KEYS.forEach(editor::remove)
         editor.commit()
     }

@@ -21,9 +21,13 @@ object ByeDpiAutoStrategies {
 
     data class Strategy(val name: String, val detect: String, val args: List<String>)
 
+    // fake-ttl comes first: on a Russian ISP where zapret2 was tuned for
+    // FlowCloud for OpenWrt, strategies without a fake packet (plain disorder,
+    // split) failed for short ClientHellos while fake-based ones opened
+    // everything.
     val strategies: List<Strategy> = listOf(
-        Strategy("sni-split", "t,s", listOf("-K", "t", "-s", "1+s", "-d", "3+s", "-r", "1+s")),
         Strategy("fake-ttl", "t,s", listOf("-K", "t", "-f", "1+s", "-t", "6", "-r", "1+s")),
+        Strategy("sni-split", "t,s", listOf("-K", "t", "-s", "1+s", "-d", "3+s", "-r", "1+s")),
         Strategy("disoob", "t,s", listOf("-K", "t", "-q", "1+s", "-r", "2+s")),
         Strategy("oob-disorder", "t,s", listOf("-K", "t", "-o", "1", "-d", "1+s", "-r", "1+s")),
         Strategy("http-host", "t,r", listOf("-K", "h", "-s", "1+h", "-M", "h,d,r")),
@@ -62,7 +66,7 @@ object ByeDpiAutoStrategies {
 
     fun cacheFileName(index: Int) = "byedpi-auto-$index.cache"
 
-    /** Wraps [preferences] so the core runs with the Auto-mode fallback groups. */
+    /** Wraps [preferences] so the core runs with the fallback groups (Auto and DPI modes). */
     fun forAutoMode(preferences: ByeDpiProxyPreferences, cacheDir: File?): ByeDpiProxyCmdPreferences {
         val base = when (preferences) {
             is ByeDpiProxyCmdPreferences -> preferences.args
