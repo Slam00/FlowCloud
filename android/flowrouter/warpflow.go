@@ -145,6 +145,13 @@ func (t *trackedConns) remove(connection *trackedConn) {
 	t.mutex.Unlock()
 }
 
+// count is the number of open tracked connections.
+func (t *trackedConns) count() int {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+	return len(t.conns)
+}
+
 // closeAll closes every tracked connection and reports how many there were.
 func (t *trackedConns) closeAll() int {
 	t.mutex.Lock()

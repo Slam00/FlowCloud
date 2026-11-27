@@ -43,6 +43,12 @@ type flowRouter struct {
 	// warpUpgradeTried is the last background search for a better pair
 	// than a non-ideal tunnel.
 	warpUpgradeTried time.Time
+	// warpSwapped: an upgrade moved traffic to the probe identity, so the
+	// main one probes now (activeWarpConfig).
+	warpSwapped bool
+	// warpDraining is the tunnel an upgrade replaced: its connections finish
+	// there while new ones use the new tunnel.
+	warpDraining *warpTunnel
 	// youtubeWarpUntil: a YouTube video stalled over TCP through ByeDPI on
 	// this network, so YouTube goes through WARP until then.
 	youtubeWarpUntil time.Time
@@ -257,6 +263,10 @@ func (r *flowRouter) close() {
 			if r.warp != nil {
 				r.warp.close()
 				r.warp = nil
+			}
+			if r.warpDraining != nil {
+				r.warpDraining.close()
+				r.warpDraining = nil
 			}
 			r.warpMutex.Unlock()
 			close(warpClosed)

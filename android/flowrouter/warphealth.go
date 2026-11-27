@@ -64,8 +64,11 @@ func (r *flowRouter) defaultPingWarp(ctx context.Context, tunnel *warpTunnel) er
 
 // defaultOpenWarpRoute runs a full selection round.
 func (r *flowRouter) defaultOpenWarpRoute(ctx context.Context) (*warpTunnel, error) {
+	// Testing runs with the identity a draining tunnel still uses.
+	r.closeDrainingWarp()
 	r.warpMutex.Lock()
 	probeTarget := r.warpProbeTarget
+	config := r.activeWarpConfigLocked()
 	r.warpMutex.Unlock()
 	if probeTarget == "" {
 		addresses, err := r.resolveWarpHost(ctx, "www.youtube.com")
@@ -77,7 +80,56 @@ func (r *flowRouter) defaultOpenWarpRoute(ctx context.Context) (*warpTunnel, err
 		r.warpProbeTarget = probeTarget
 		r.warpMutex.Unlock()
 	}
-	return openWorkingWarp(ctx, r.warpConfig, probeTarget, r.resolveWarpHost, r.warpSelection())
+	return openWorkingWarp(ctx, config, probeTarget, r.resolveWarpHost, r.warpSelection())
+}
+
+// activeWarpConfigLocked is the identity that carries traffic, with the other
+// one as its probe; the caller holds warpMutex.
+func (r *flowRouter) activeWarpConfigLocked() warpConfig {
+	if !r.warpSwapped || r.warpConfig.Probe == nil {
+		return r.warpConfig
+	}
+	active := *r.warpConfig.Probe
+	other := r.warpConfig
+	other.Probe, other.Masque = nil, nil
+	active.Probe = &other
+	active.Masque = r.warpConfig.Masque
+	return active
+}
+
+// closeDrainingWarp ends the tunnel an upgrade replaced, before its identity
+// is used for testing again.
+func (r *flowRouter) closeDrainingWarp() {
+	r.warpMutex.Lock()
+	draining := r.warpDraining
+	r.warpDraining = nil
+	r.warpMutex.Unlock()
+	if draining != nil {
+		closed := draining.conns.closeAll()
+		draining.close()
+		flowRouterLogf("WARP %s: replaced tunnel closed with %d connections", draining.endpoint, closed)
+	}
+}
+
+// drainWarp closes a replaced tunnel once its connections have finished, or
+// after warpDrainMax.
+func (r *flowRouter) drainWarp(tunnel *warpTunnel) {
+	deadline := time.Now().Add(warpDrainMax)
+	tick := time.NewTicker(5 * time.Second)
+	defer tick.Stop()
+	for time.Now().Before(deadline) && tunnel.conns.count() > 0 {
+		select {
+		case <-r.context.Done():
+			return
+		case <-tick.C:
+		}
+	}
+	r.warpMutex.Lock()
+	current := r.warpDraining == tunnel
+	r.warpMutex.Unlock()
+	if current {
+		r.closeDrainingWarp()
+	}
 }
 
 // requestWarpCheck asks the watcher for an immediate check without blocking.
@@ -138,7 +190,7 @@ func (r *flowRouter) watchWarp() {
 		}
 		r.warpMutex.Lock()
 		tunnel, reselecting := r.warp, r.warpReselecting
-		upgradeDue := tunnel != nil && !tunnel.ideal && r.warpConfig.Probe != nil &&
+		upgradeDue := tunnel != nil && !tunnel.ideal && r.warpConfig.Probe != nil && r.warpDraining == nil &&
 			time.Since(tunnel.openedAt) >= warpUpgradeAfter && time.Since(r.warpUpgradeTried) >= warpUpgradeEvery
 		r.warpMutex.Unlock()
 		if tunnel == nil || reselecting {
@@ -172,20 +224,30 @@ const (
 	warpUpgradeAfter   = 90 * time.Second
 	warpUpgradeEvery   = 10 * time.Minute
 	warpUpgradeTimeout = 30 * time.Second
+	// warpDrainMax bounds how long a replaced tunnel keeps its connections;
+	// shorter than warpUpgradeEvery, since the next search tests with its
+	// identity.
+	warpDrainMax = 5 * time.Minute
 )
 
-// upgradeWarp looks for an ideal pair with the probe device and moves to it.
-// Connections over the old tunnel are closed (apps reconnect). If the new
-// pair carries nothing with the main key, the old tunnel reconnects, since
-// the attempt took its Cloudflare session.
+// upgradeWarp looks for an ideal pair with the probe identity and moves new
+// connections to it without touching the live tunnel: the new pair opens with
+// the probe identity it was just tested with (opening it with the live key
+// would take Cloudflare's session from the live tunnel and cut every
+// connection), and the identities swap roles. Connections of the old tunnel
+// finish there (drainWarp).
 func (r *flowRouter) upgradeWarp(current *warpTunnel) {
 	r.warpMutex.Lock()
 	r.warpUpgradeTried = time.Now()
 	probeTarget := r.warpProbeTarget
+	config := r.activeWarpConfigLocked()
 	r.warpMutex.Unlock()
+	if config.Probe == nil {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.context, warpUpgradeTimeout)
 	defer cancel()
-	evaluated, err := selectWarpEvaluations(ctx, r.warpConfig, probeTarget, r.resolveWarpHost, r.warpSelection(), current.endpoint)
+	evaluated, err := selectWarpEvaluations(ctx, config, probeTarget, r.resolveWarpHost, r.warpSelection(), current.endpoint)
 	if err != nil {
 		flowRouterLogf("WARP upgrade: no better pair than %s: %v", current.endpoint, err)
 		return
@@ -200,11 +262,14 @@ func (r *flowRouter) upgradeWarp(current *warpTunnel) {
 		flowRouterLogf("WARP upgrade: no pair opens every test site outside the avoided locations; keeping %s", current.endpoint)
 		return
 	}
+	// The probe identity carries the new tunnel; its Probe is the live one,
+	// which applyWarpWinner does not use.
+	swapped := *config.Probe
+	swapped.Masque = config.Masque
 	started := time.Now()
-	tunnel, err := applyWarpWinner(ctx, r.warpConfig, probeTarget, r.resolveWarpHost, r.warpSelection(), ideal, started)
+	tunnel, err := applyWarpWinner(ctx, swapped, probeTarget, r.resolveWarpHost, r.warpSelection(), ideal, started)
 	if err != nil {
-		flowRouterLogf("WARP upgrade: %v; reconnecting %s", err, current.endpoint)
-		_ = current.reconnect()
+		flowRouterLogf("WARP upgrade: %v; keeping %s", err, current.endpoint)
 		return
 	}
 	r.warpMutex.Lock()
@@ -214,12 +279,17 @@ func (r *flowRouter) upgradeWarp(current *warpTunnel) {
 		return
 	}
 	r.warp = tunnel
+	r.warpSwapped = !r.warpSwapped
+	r.warpDraining = current
 	r.warpDialFailures = 0
 	r.warpMutex.Unlock()
-	closed := current.conns.closeAll()
-	current.close()
-	flowRouterLogf("WARP upgrade: %s -> %s (exit %s); closed %d connections of the old tunnel",
-		current.endpoint, tunnel.endpoint, orDash(tunnel.colo), closed)
+	flowRouterLogf("WARP upgrade: %s -> %s (exit %s); %d connections finish on the old tunnel",
+		current.endpoint, tunnel.endpoint, orDash(tunnel.colo), current.conns.count())
+	r.wait.Add(1)
+	go func() {
+		defer r.wait.Done()
+		r.drainWarp(current)
+	}()
 }
 
 // stallDetector watches a tunnel's byte counters.
