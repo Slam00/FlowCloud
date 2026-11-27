@@ -40,12 +40,15 @@ type flowRouter struct {
 	warpDialFailures int
 	// warpReconnects counts WARP flows revived from a new source port.
 	warpReconnects int
-	warpCheck      chan struct{}
-	health         warpHealthSettings
-	pingWarp       func(context.Context, *warpTunnel) error
-	openWarpRoute  func(context.Context) (*warpTunnel, error)
-	closeOnce      sync.Once
-	wait           sync.WaitGroup
+	// youtubeWarpUntil: a YouTube video stalled over TCP through ByeDPI on
+	// this network, so YouTube goes through WARP until then.
+	youtubeWarpUntil time.Time
+	warpCheck        chan struct{}
+	health           warpHealthSettings
+	pingWarp         func(context.Context, *warpTunnel) error
+	openWarpRoute    func(context.Context) (*warpTunnel, error)
+	closeOnce        sync.Once
+	wait             sync.WaitGroup
 }
 
 const warpRetryInterval = 30 * time.Second
@@ -316,6 +319,9 @@ func (r *flowRouter) handleConnect(client net.Conn, target socksTarget) {
 		base = baseRouteOrder(useWarp, useByeDPI, false)
 	}
 	key := routeKey(host, target)
+	if autoFallback && isYouTubeHost(host) && !useByeDPI && r.youtubeViaWarp() && r.routeAvailable(routeWarp) {
+		r.routes.remember(key, routeWarp)
+	}
 	var learned routeKind
 	hasLearned := false
 	if autoFallback {
@@ -357,6 +363,17 @@ func (r *flowRouter) handleConnect(client net.Conn, target socksTarget) {
 	}
 	if result.initialSent {
 		initial = nil
+	}
+	if autoFallback && result.route != routeWarp && isVideoHost(host) && !useByeDPI && r.routeAvailable(routeWarp) {
+		watched := newStallWatchedConn(upstream)
+		stop := watched.watch(videoStallSilence, func() {
+			r.markYouTubeViaWarp(host, result.route)
+			_ = client.Close()
+			_ = upstream.Close()
+		})
+		defer stop()
+		relayTCP(client, watched, initial)
+		return
 	}
 	relayTCP(client, upstream, initial)
 }
@@ -553,9 +570,12 @@ func (r *flowRouter) handleUDP(control net.Conn) {
 	}
 	warpConnections := make(map[string]*warpUDPState)
 	var warpConnectionsMutex sync.Mutex
-	// Auto mode watches QUIC that goes through ByeDPI for stalls (quicstall.go).
-	autoQUIC := r.routes != nil && !r.warpRules.all && r.warpConfig.available()
+	// Auto mode: YouTube's QUIC is dropped so apps use TCP through ByeDPI, and
+	// other QUIC through ByeDPI is watched for stalls (quicstall.go).
+	autoMode := r.routes != nil && !r.warpRules.all
+	autoQUIC := autoMode && r.warpConfig.available()
 	stalls := newQuicStallTracker()
+	droppedQUIC := map[string]bool{}
 	udpClosed := false
 	sendViaByeDPI := func(packet []byte) {
 		_, _ = upstream.socket.WriteToUDP(packet, upstream.target)
@@ -652,20 +672,27 @@ func (r *flowRouter) handleUDP(control net.Conn) {
 			// The DNS cache lets IP-based QUIC packets follow the same WARP rules as
 			// TCP. Unknown UDP/443 must not be forced through WARP: doing that stalls
 			// ordinary sites on mobile providers that impair WireGuard UDP.
-			if autoQUIC && frame.target.port == 443 && !r.byeDPIRules.matches(host) &&
+			if autoMode && frame.target.port == 443 && !r.byeDPIRules.matches(host) &&
+				!r.warpRules.matches(host) && !r.warpRules.matches(frame.target.host) &&
 				!r.learnedWarp(host, frame.target.host) {
-				youtube := quicPrefersWarp(host)
-				stalled := !youtube && stalls.up(frame.target.address())
-				if youtube || stalled {
-					key := routeKey(host, frame.target)
+				key := routeKey(host, frame.target)
+				switch {
+				case isYouTubeHost(host) && autoQUIC && r.youtubeViaWarp():
+					// TCP through ByeDPI stalled on this network: YouTube uses WARP.
 					r.routes.remember(key, routeWarp)
-					if stalled {
-						flowRouterLogf("QUIC stalled through ByeDPI: host=%s target=%s; WARP from now on (ttl=%s)",
-							key, frame.target.address(), r.routes.ttl)
-					} else {
-						flowRouterLogf("QUIC route WARP: host=%s target=%s (YouTube video stalls on direct QUIC)",
-							key, frame.target.address())
+				case isYouTubeHost(host):
+					// ByeDPI cannot help QUIC, and direct QUIC to YouTube is cut after
+					// the first megabytes. Without an answer the app switches to TCP,
+					// which goes through ByeDPI at full speed.
+					if !droppedQUIC[key] {
+						droppedQUIC[key] = true
+						flowRouterLogf("QUIC to YouTube dropped: host=%s target=%s; the app uses TCP through ByeDPI", key, frame.target.address())
 					}
+					continue
+				case autoQUIC && stalls.up(frame.target.address()):
+					r.routes.remember(key, routeWarp)
+					flowRouterLogf("QUIC stalled through ByeDPI: host=%s target=%s; WARP from now on (ttl=%s)",
+						key, frame.target.address(), r.routes.ttl)
 				}
 			}
 			if r.warpRules.matches(host) || r.warpRules.matches(frame.target.host) ||

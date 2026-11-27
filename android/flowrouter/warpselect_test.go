@@ -87,16 +87,39 @@ func TestParseWarpConfigProbe(t *testing.T) {
 	}
 }
 
-func TestQuicPrefersWarp(t *testing.T) {
+func TestYouTubeHosts(t *testing.T) {
 	for _, host := range []string{"rr1---sn-gvnuxaxjvh-axq6.googlevideo.com", "www.youtube.com", "i.ytimg.com", "YT3.GGPHT.COM.", "youtubei.googleapis.com"} {
-		if !quicPrefersWarp(host) {
-			t.Errorf("%s must go through WARP", host)
+		if !isYouTubeHost(host) {
+			t.Errorf("%s is a YouTube host", host)
 		}
 	}
 	for _, host := range []string{"", "notyoutube.com", "www.google.com", "googleapis.com"} {
-		if quicPrefersWarp(host) {
-			t.Errorf("%s must keep the normal route", host)
+		if isYouTubeHost(host) {
+			t.Errorf("%s is not a YouTube host", host)
 		}
+	}
+	if !isVideoHost("rr4---sn-abc.googlevideo.com") || isVideoHost("www.youtube.com") {
+		t.Fatal("only googlevideo serves video")
+	}
+}
+
+func TestStallWatchedConn(t *testing.T) {
+	watched := &stallWatchedConn{}
+	base := time.Unix(1000, 0)
+	watched.lastDown.Store(base.UnixNano())
+	if watched.stalled(base.Add(time.Minute), videoStallSilence) {
+		t.Fatal("silence with no request pending (a paused player) is no stall")
+	}
+	watched.lastUp.Store(base.Add(time.Second).UnixNano())
+	if watched.stalled(base.Add(5*time.Second), videoStallSilence) {
+		t.Fatal("five seconds is no stall yet")
+	}
+	if !watched.stalled(base.Add(9*time.Second), videoStallSilence) {
+		t.Fatal("a pending request with the server silent for 8 s is a stall")
+	}
+	watched.lastDown.Store(base.Add(8 * time.Second).UnixNano())
+	if watched.stalled(base.Add(9*time.Second), videoStallSilence) {
+		t.Fatal("new data ends the stall")
 	}
 }
 
