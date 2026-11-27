@@ -22,12 +22,17 @@ import (
 )
 
 // Hosts used as the visible name inside generated decoys. They only need to be
-// names every network already sees in bulk.
+// names every network already sees in bulk; the Russian ones are what a
+// Russian provider's DPI is least likely to throttle. Selection remembers
+// which profile got through on each network.
 var i1Hosts = []string{
 	"www.apple.com",
 	"www.google.com",
 	"www.microsoft.com",
 	"cdn.jsdelivr.net",
+	"ya.ru",
+	"yandex.ru",
+	"vk.com",
 }
 
 type cpsChain struct {
