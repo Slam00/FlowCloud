@@ -172,3 +172,23 @@ func TestAWG3LinesAreAcceptedByDevice(t *testing.T) {
 	}
 	tunnel.close()
 }
+
+func TestWarpAvoidColosFromOptions(t *testing.T) {
+	defer setWarpAvoidColos(nil)
+	options, err := parseRouterOptions(`{"avoid_colos":["dme"]}`)
+	if err != nil || options.AvoidColos == nil {
+		t.Fatalf("options = %+v, %v", options, err)
+	}
+	setWarpAvoidColos(*options.AvoidColos)
+	if !warpAvoided("DME") || warpAvoided("LED") {
+		t.Fatal("only the chosen location is avoided")
+	}
+	setWarpAvoidColos([]string{})
+	if warpAvoided("DME") {
+		t.Fatal("an empty list avoids nothing")
+	}
+	setWarpAvoidColos(nil)
+	if !warpAvoided("DME") || !warpAvoided("LED") {
+		t.Fatal("absent means Moscow and Saint Petersburg")
+	}
+}

@@ -30,6 +30,10 @@ type routerOptions struct {
 	// NetworkKey identifies the physical network (transport and operator) the
 	// cached endpoints were measured on.
 	NetworkKey string `json:"network_key"`
+	// AvoidColos are Cloudflare locations a WARP exit is taken from only when
+	// no other pair opens the test sites. Absent means DME and LED; an empty
+	// list avoids nothing.
+	AvoidColos *[]string `json:"avoid_colos,omitempty"`
 }
 
 func parseRouterOptions(text string) (routerOptions, error) {

@@ -47,4 +47,12 @@
         <item name="blacklist">blacklist</item>
         <item name="whitelist">whitelist</item>
     </array>
+    <string-array name="warp_avoid_colos">
+        <item>Москва (DME)</item>
+        <item>Санкт-Петербург (LED)</item>
+    </string-array>
+    <string-array name="warp_avoid_colos_entries">
+        <item>DME</item>
+        <item>LED</item>
+    </string-array>
 </resources>

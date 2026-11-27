@@ -423,6 +423,12 @@ class ByeDpiVpnService : LifecycleVpnService() {
         .put("learn_ttl_seconds", ByeDpiAutoStrategies.DEFAULT_CACHE_TTL_SECONDS)
         .put("endpoint_cache_file", File(autoCacheDir(), "warp-endpoints.json").absolutePath)
         .put("network_key", WarpNetworkKey.of(applicationContext, underlyingNetwork))
+        .put(
+            "avoid_colos",
+            org.json.JSONArray(
+                getPreferences().getStringSet("warp_avoid_colos", setOf("DME", "LED")).orEmpty().sorted(),
+            ),
+        )
         .toString()
 
     private fun stopAutoRouter() {

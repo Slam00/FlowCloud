@@ -59,6 +59,19 @@
     </androidx.preference.PreferenceCategory>
 
     <androidx.preference.PreferenceCategory
+        android:title="@string/warp_category">
+
+        <MultiSelectListPreference
+            android:key="warp_avoid_colos"
+            android:title="@string/warp_avoid_colos_setting"
+            android:summary="@string/warp_avoid_colos_summary"
+            android:entries="@array/warp_avoid_colos"
+            android:entryValues="@array/warp_avoid_colos_entries"
+            android:defaultValue="@array/warp_avoid_colos_entries" />
+
+    </androidx.preference.PreferenceCategory>
+
+    <androidx.preference.PreferenceCategory
         android:title="@string/about_category">
 
         <Preference

@@ -80,6 +80,11 @@ func newFlowRouter(listenAddress, byeDPIAddress, dnsRelayAddress, warpRulesText,
 	if options.AutoFallback {
 		routes = newRouteCache(options.StateFile, time.Duration(options.LearnTTLSeconds)*time.Second)
 	}
+	if options.AvoidColos != nil {
+		setWarpAvoidColos(*options.AvoidColos)
+	} else {
+		setWarpAvoidColos(nil)
+	}
 	router := &flowRouter{
 		listenAddress: listenAddress,
 		byeDPIAddress: byeDPIAddress,

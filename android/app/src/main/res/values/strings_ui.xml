@@ -18,4 +18,7 @@
     <string name="warp_info_ping">%1$d мс</string>
     <string name="warp_info_ping_measuring">…</string>
     <string name="warp_info_ping_failed">нет ответа</string>
+    <string name="warp_category">WARP</string>
+    <string name="warp_avoid_colos_setting">Избегать выхода в</string>
+    <string name="warp_avoid_colos_summary">Города Cloudflare, где WARP выходит в интернет через российские сети и блокировки остаются. Такой сервер выбирается, только если другие не открывают тестовые сайты. Применяется при следующем подключении.</string>
 </resources>

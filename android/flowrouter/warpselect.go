@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -50,10 +51,32 @@ const (
 // through Russian networks, so blocked sites stay blocked (seen on the test
 // ISP: Telegram failed through Moscow, everything opened through Stockholm
 // at the same ping). They are used only when nothing else opens the sites.
-var warpAvoidColos = []string{"DME", "LED"}
+var defaultWarpAvoidColos = []string{"DME", "LED"}
+
+// warpAvoidColos is set from the app's settings when a router starts
+// (setWarpAvoidColos); one router runs at a time.
+var warpAvoidColos atomic.Pointer[[]string]
+
+// setWarpAvoidColos sets the avoided locations; nil restores the default.
+func setWarpAvoidColos(colos []string) {
+	if colos == nil {
+		colos = defaultWarpAvoidColos
+	}
+	cleaned := make([]string, 0, len(colos))
+	for _, colo := range colos {
+		if colo = strings.ToUpper(strings.TrimSpace(colo)); colo != "" {
+			cleaned = append(cleaned, colo)
+		}
+	}
+	warpAvoidColos.Store(&cleaned)
+}
 
 func warpAvoided(colo string) bool {
-	for _, code := range warpAvoidColos {
+	colos := defaultWarpAvoidColos
+	if stored := warpAvoidColos.Load(); stored != nil {
+		colos = *stored
+	}
+	for _, code := range colos {
 		if strings.EqualFold(code, colo) {
 			return true
 		}
