@@ -12,8 +12,8 @@
     </array>
 
     <array name="byedpi_modes">
-        <item name="vpn">VPN</item>
-        <item name="proxy">Прокси</item>
+        <item name="vpn">VPN в выбранном режиме</item>
+        <item name="proxy">Только прокси ByeDPI</item>
     </array>
     <array name="byedpi_modes_entries">
         <item name="vpn">vpn</item>

@@ -250,9 +250,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.bottomNavigation.setOnItemSelectedListener { item ->
-            val showSettings = item.itemId == R.id.navigation_settings
-            binding.homePage.visibility = if (showSettings) View.GONE else View.VISIBLE
-            binding.settingsPage.visibility = if (showSettings) View.VISIBLE else View.GONE
+            showPage(item.itemId)
             true
         }
 
@@ -267,7 +265,14 @@ class MainActivity : AppCompatActivity() {
         binding.saveRoutingRulesButton.setOnClickListener { saveSplitTunnelRules() }
         updateExcludedAppsStatus()
         binding.selectExcludedAppsButton.setOnClickListener { showAppBypassDialog() }
-        binding.advancedSettingsButton.setOnClickListener { openAdvancedSettings() }
+        binding.networkSettingsButton.setOnClickListener {
+            openSettings(SettingsActivity.Screen.Network)
+        }
+        binding.warpSettingsButton.setOnClickListener { openSettings(SettingsActivity.Screen.Warp) }
+        binding.byedpiSettingsButton.setOnClickListener {
+            openSettings(SettingsActivity.Screen.ByeDpi)
+        }
+        binding.themeButton.setOnClickListener { showThemeDialog() }
         binding.saveLogsButton.setOnClickListener { launchLogExport() }
         binding.updateStatus.text = getString(
             R.string.installed_version,
@@ -315,6 +320,7 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         updateStatus()
+        updateSettingsSummaries()
         // Also when the app returns from the background: the activity is often
         // kept alive, so a check only in onCreate would rarely run.
         if (binding.automaticUpdatesSwitch.isChecked && updateDialog?.isShowing != true) {
@@ -325,6 +331,19 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         unregisterReceiver(receiver)
+    }
+
+    override fun onRestoreInstanceState(savedInstanceState: Bundle) {
+        super.onRestoreInstanceState(savedInstanceState)
+        // The bottom bar restores its tab without calling the listener, e.g. after
+        // a theme change recreates the activity while the Settings tab is open.
+        showPage(binding.bottomNavigation.selectedItemId)
+    }
+
+    private fun showPage(itemId: Int) {
+        val showSettings = itemId == R.id.navigation_settings
+        binding.homePage.visibility = if (showSettings) View.GONE else View.VISIBLE
+        binding.settingsPage.visibility = if (showSettings) View.VISIBLE else View.GONE
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -343,7 +362,7 @@ class MainActivity : AppCompatActivity() {
         return when (item.itemId) {
             R.id.action_settings -> {
                 if (status == AppStatus.Halted) {
-                    openAdvancedSettings()
+                    openSettings(SettingsActivity.Screen.Network)
                 } else {
                     Toast.makeText(this, R.string.settings_unavailable, Toast.LENGTH_SHORT)
                         .show()
@@ -551,6 +570,64 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateDecision() {
         binding.transportLayout.helperText = getString(TransportOption.descriptionRes(currentTransport))
+        updateSettingsSummaries()
+    }
+
+    /** One-line state of each settings screen on the Settings tab, aware of the chosen mode. */
+    private fun updateSettingsSummaries() {
+        val preferences = getPreferences()
+
+        val dns = preferences.getStringNotNull("dns_ip", "1.1.1.1")
+            .ifBlank { getString(R.string.settings_dns_system) }
+        val ipv6 = getString(
+            if (preferences.getBoolean("ipv6_enable", false)) R.string.ipv6_on else R.string.ipv6_off
+        )
+        binding.networkSettingsSummary.text = getString(R.string.settings_network_summary, dns, ipv6)
+
+        binding.warpSettingsSummary.text = if (currentTransport == TransportMode.ByeDpi) {
+            getString(R.string.settings_warp_unused)
+        } else {
+            val codes = resources.getStringArray(R.array.warp_avoid_colos_entries)
+            val names = resources.getStringArray(R.array.warp_avoid_colos)
+            val avoided = preferences.getStringSet("warp_avoid_colos", codes.toSet()).orEmpty()
+            val labels = codes.indices.filter { codes[it] in avoided }.map { names[it] }
+            if (labels.isEmpty()) {
+                getString(R.string.settings_warp_summary_none)
+            } else {
+                getString(R.string.settings_warp_summary, labels.joinToString())
+            }
+        }
+
+        binding.byedpiSettingsSummary.text = getString(
+            when {
+                currentTransport == TransportMode.Warp -> R.string.settings_byedpi_warp_only
+                preferences.getBoolean("byedpi_enable_cmd_settings", false) ->
+                    R.string.settings_byedpi_summary_cmd
+                else -> R.string.settings_byedpi_summary_ui
+            }
+        )
+
+        val themes = resources.getTextArray(R.array.themes_entries).map { it.toString() }
+        val themeIndex = themes.indexOf(preferences.getString("app_theme", null) ?: "dark")
+        binding.themeSummary.text = resources.getTextArray(R.array.themes)
+            .getOrElse(themeIndex) { "" }
+    }
+
+    private fun showThemeDialog() {
+        val preferences = getPreferences()
+        val values = resources.getTextArray(R.array.themes_entries).map { it.toString() }
+        val current = values.indexOf(preferences.getString("app_theme", null) ?: "dark")
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.theme_settings)
+            .setSingleChoiceItems(R.array.themes, current) { dialog, which ->
+                val theme = values[which]
+                preferences.edit().putString("app_theme", theme).apply()
+                dialog.dismiss()
+                updateSettingsSummaries()
+                MainSettingsFragment.setTheme(theme)
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     private fun saveSplitTunnelRules() {
@@ -650,10 +727,10 @@ class MainActivity : AppCompatActivity() {
         .toList()
     }
 
-    private fun openAdvancedSettings() {
+    private fun openSettings(screen: SettingsActivity.Screen) {
         val (status, _) = appStatus
         if (status == AppStatus.Halted) {
-            startActivity(Intent(this, SettingsActivity::class.java))
+            startActivity(SettingsActivity.intent(this, screen))
         } else {
             Toast.makeText(this, R.string.settings_unavailable, Toast.LENGTH_SHORT).show()
         }

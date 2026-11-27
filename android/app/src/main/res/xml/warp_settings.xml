@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Settings → WARP: used in the Авто and WARP modes. -->
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
+    android:tag="warp_settings">
+
+    <Preference
+        android:key="warp_mode_note"
+        android:persistent="false"
+        android:selectable="false"
+        android:icon="@drawable/ic_info_24"
+        android:summary="@string/warp_unused_in_byedpi" />
+
+    <androidx.preference.PreferenceCategory
+        android:title="@string/warp_exit_category">
+
+        <MultiSelectListPreference
+            android:key="warp_avoid_colos"
+            android:title="@string/warp_avoid_colos_setting"
+            android:summary="@string/warp_avoid_colos_summary"
+            android:entries="@array/warp_avoid_colos"
+            android:entryValues="@array/warp_avoid_colos_entries"
+            android:defaultValue="@array/warp_avoid_colos_entries" />
+
+    </androidx.preference.PreferenceCategory>
+
+</PreferenceScreen>

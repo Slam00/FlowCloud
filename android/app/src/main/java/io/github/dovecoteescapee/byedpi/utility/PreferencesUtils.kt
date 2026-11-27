@@ -2,6 +2,7 @@ package io.github.dovecoteescapee.byedpi.utility
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.annotation.StringRes
 import androidx.preference.Preference
 import androidx.preference.PreferenceFragmentCompat
 import androidx.preference.PreferenceManager
@@ -32,3 +33,8 @@ fun SharedPreferences.saveTransportMode(mode: TransportMode) {
 
 fun <T : Preference> PreferenceFragmentCompat.findPreferenceNotNull(key: CharSequence): T =
     findPreference(key) ?: throw IllegalStateException("Preference $key not found")
+
+/** Shows the screen's name in the settings toolbar; called from onResume so Back restores it. */
+fun PreferenceFragmentCompat.setScreenTitle(@StringRes title: Int) {
+    activity?.setTitle(title)
+}

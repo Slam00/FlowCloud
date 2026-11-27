@@ -54,6 +54,7 @@ class ByeDpiUISettingsFragment : PreferenceFragmentCompat() {
 
     override fun onResume() {
         super.onResume()
+        setScreenTitle(R.string.ui_editor)
         sharedPreferences?.registerOnSharedPreferenceChangeListener(preferenceListener)
     }
 

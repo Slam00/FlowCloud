@@ -210,6 +210,112 @@
                 <TextView
                     style="@style/Widget.FlowCloud.SectionLabel"
                     android:layout_marginTop="12dp"
+                    android:text="@string/settings_connection_section" />
+
+                <com.google.android.material.card.MaterialCardView
+                    style="@style/Widget.FlowCloud.Card"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical">
+
+                        <LinearLayout
+                            android:id="@+id/network_settings_button"
+                            style="@style/Widget.FlowCloud.Row">
+
+                            <ImageView
+                                style="@style/Widget.FlowCloud.RowIcon"
+                                android:src="@drawable/ic_network_24" />
+
+                            <LinearLayout
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:orientation="vertical">
+
+                                <TextView
+                                    style="@style/Widget.FlowCloud.RowTitle"
+                                    android:text="@string/settings_network_title" />
+
+                                <TextView
+                                    android:id="@+id/network_settings_summary"
+                                    style="@style/Widget.FlowCloud.RowSubtitle" />
+                            </LinearLayout>
+
+                            <ImageView style="@style/Widget.FlowCloud.Chevron" />
+                        </LinearLayout>
+
+                        <View
+                            android:layout_width="match_parent"
+                            android:layout_height="1dp"
+                            android:background="@color/flow_outline" />
+
+                        <LinearLayout
+                            android:id="@+id/warp_settings_button"
+                            style="@style/Widget.FlowCloud.Row">
+
+                            <ImageView
+                                style="@style/Widget.FlowCloud.RowIcon"
+                                android:src="@drawable/ic_cloud_24" />
+
+                            <LinearLayout
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:orientation="vertical">
+
+                                <TextView
+                                    style="@style/Widget.FlowCloud.RowTitle"
+                                    android:text="@string/warp_category" />
+
+                                <TextView
+                                    android:id="@+id/warp_settings_summary"
+                                    style="@style/Widget.FlowCloud.RowSubtitle" />
+                            </LinearLayout>
+
+                            <ImageView style="@style/Widget.FlowCloud.Chevron" />
+                        </LinearLayout>
+
+                        <View
+                            android:layout_width="match_parent"
+                            android:layout_height="1dp"
+                            android:background="@color/flow_outline" />
+
+                        <LinearLayout
+                            android:id="@+id/byedpi_settings_button"
+                            style="@style/Widget.FlowCloud.Row">
+
+                            <ImageView
+                                style="@style/Widget.FlowCloud.RowIcon"
+                                android:src="@drawable/ic_tune_24" />
+
+                            <LinearLayout
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:orientation="vertical">
+
+                                <TextView
+                                    style="@style/Widget.FlowCloud.RowTitle"
+                                    android:text="@string/byedpi_category" />
+
+                                <TextView
+                                    android:id="@+id/byedpi_settings_summary"
+                                    style="@style/Widget.FlowCloud.RowSubtitle" />
+                            </LinearLayout>
+
+                            <ImageView style="@style/Widget.FlowCloud.Chevron" />
+                        </LinearLayout>
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+
+                <TextView
+                    style="@style/Widget.FlowCloud.SectionLabel"
+                    android:layout_marginTop="20dp"
                     android:text="@string/settings_routing_section" />
 
                 <com.google.android.material.card.MaterialCardView
@@ -342,7 +448,7 @@
                 <TextView
                     style="@style/Widget.FlowCloud.SectionLabel"
                     android:layout_marginTop="20dp"
-                    android:text="@string/updates" />
+                    android:text="@string/settings_app_section" />
 
                 <com.google.android.material.card.MaterialCardView
                     style="@style/Widget.FlowCloud.Card"
@@ -354,6 +460,37 @@
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:orientation="vertical">
+
+                        <LinearLayout
+                            android:id="@+id/theme_button"
+                            style="@style/Widget.FlowCloud.Row">
+
+                            <ImageView
+                                style="@style/Widget.FlowCloud.RowIcon"
+                                android:src="@drawable/ic_palette_24" />
+
+                            <LinearLayout
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:orientation="vertical">
+
+                                <TextView
+                                    style="@style/Widget.FlowCloud.RowTitle"
+                                    android:text="@string/theme_settings" />
+
+                                <TextView
+                                    android:id="@+id/theme_summary"
+                                    style="@style/Widget.FlowCloud.RowSubtitle" />
+                            </LinearLayout>
+
+                            <ImageView style="@style/Widget.FlowCloud.Chevron" />
+                        </LinearLayout>
+
+                        <View
+                            android:layout_width="match_parent"
+                            android:layout_height="1dp"
+                            android:background="@color/flow_outline" />
 
                         <LinearLayout
                             style="@style/Widget.FlowCloud.Row"
@@ -422,7 +559,7 @@
                 <TextView
                     style="@style/Widget.FlowCloud.SectionLabel"
                     android:layout_marginTop="20dp"
-                    android:text="@string/settings_more_section" />
+                    android:text="@string/settings_diagnostics_section" />
 
                 <com.google.android.material.card.MaterialCardView
                     style="@style/Widget.FlowCloud.Card"
@@ -436,28 +573,6 @@
                         android:orientation="vertical">
 
                         <LinearLayout
-                            android:id="@+id/advanced_settings_button"
-                            style="@style/Widget.FlowCloud.Row">
-
-                            <ImageView
-                                style="@style/Widget.FlowCloud.RowIcon"
-                                android:src="@drawable/ic_tune_24" />
-
-                            <TextView
-                                style="@style/Widget.FlowCloud.RowTitle"
-                                android:layout_width="0dp"
-                                android:layout_weight="1"
-                                android:text="@string/advanced_settings" />
-
-                            <ImageView style="@style/Widget.FlowCloud.Chevron" />
-                        </LinearLayout>
-
-                        <View
-                            android:layout_width="match_parent"
-                            android:layout_height="1dp"
-                            android:background="@color/flow_outline" />
-
-                        <LinearLayout
                             android:id="@+id/save_logs_button"
                             style="@style/Widget.FlowCloud.Row">
 
@@ -465,11 +580,20 @@
                                 style="@style/Widget.FlowCloud.RowIcon"
                                 android:src="@drawable/ic_log_24" />
 
-                            <TextView
-                                style="@style/Widget.FlowCloud.RowTitle"
+                            <LinearLayout
                                 android:layout_width="0dp"
+                                android:layout_height="wrap_content"
                                 android:layout_weight="1"
-                                android:text="@string/save_logs" />
+                                android:orientation="vertical">
+
+                                <TextView
+                                    style="@style/Widget.FlowCloud.RowTitle"
+                                    android:text="@string/save_logs" />
+
+                                <TextView
+                                    android:text="@string/save_logs_summary"
+                                    style="@style/Widget.FlowCloud.RowSubtitle" />
+                            </LinearLayout>
 
                             <ImageView style="@style/Widget.FlowCloud.Chevron" />
                         </LinearLayout>
