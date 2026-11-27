@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"sync/atomic"
 	"time"
 )
 
@@ -111,17 +112,28 @@ func (r *flowRouter) closeDrainingWarp() {
 	}
 }
 
+// warpDrainTick is how often a draining tunnel is looked at; tests shorten it.
+var warpDrainTick = 5 * time.Second
+
 // drainWarp closes a replaced tunnel once its connections have finished, or
-// after warpDrainMax.
+// after warpDrainMax. The provider cuts long flows on this tunnel as well and
+// nothing else watches it: connections over a cut flow never come back, so a
+// stall closes them and apps reconnect over the live tunnel.
 func (r *flowRouter) drainWarp(tunnel *warpTunnel) {
 	deadline := time.Now().Add(warpDrainMax)
-	tick := time.NewTicker(5 * time.Second)
+	tick := time.NewTicker(warpDrainTick)
 	defer tick.Stop()
+	var stall stallDetector
 	for time.Now().Before(deadline) && tunnel.conns.count() > 0 {
 		select {
 		case <-r.context.Done():
 			return
 		case <-tick.C:
+		}
+		rx, tx, sent, ok := tunnel.traffic()
+		if ok && stall.add(tunnel, time.Now(), rx, tx, sent, r.health.stallWindow) && !r.warpAlive(tunnel) {
+			flowRouterLogf("WARP %s: replaced tunnel sends and receives nothing", tunnel.endpoint)
+			break
 		}
 	}
 	r.warpMutex.Lock()
@@ -197,16 +209,21 @@ func (r *flowRouter) watchWarp() {
 			stall.reset()
 			continue
 		}
-		if upgradeDue {
-			r.upgradeWarp(tunnel)
-			stall.reset()
-			next = time.Now().Add(r.health.interval)
-			continue
+		var job func(context.Context)
+		switch {
+		case upgradeDue:
+			job = func(ctx context.Context) { r.upgradeWarp(ctx, tunnel) }
+		case r.warpBackupCheckDue(tunnel):
+			job = func(ctx context.Context) { r.checkWarpBackups(ctx, tunnel) }
 		}
-		if r.warpBackupCheckDue(tunnel) {
-			r.checkWarpBackups(tunnel)
-			stall.reset()
+		if job != nil {
+			interrupted := r.runWarpBackground(tunnel, job)
 			next = time.Now().Add(r.health.interval)
+			if interrupted {
+				// Cut short by a suspected stall or a check request: check now.
+				next = time.Now()
+			}
+			stall.reset()
 			continue
 		}
 		rx, tx, sent, ok := tunnel.traffic()
@@ -219,6 +236,54 @@ func (r *flowRouter) watchWarp() {
 			next = time.Now().Add(r.health.interval)
 		}
 	}
+}
+
+// runWarpBackground runs job (an upgrade search or a backup check, up to half
+// a minute) on the watcher while still watching tunnel: a suspected stall or
+// a check request cancels the job, so a cut is handled within seconds rather
+// than after the job's own timeout. It reports whether the job was cut short.
+// The job stays on the watcher so its probing never overlaps a reselection
+// round that tests with the same identity.
+func (r *flowRouter) runWarpBackground(tunnel *warpTunnel, job func(context.Context)) bool {
+	ctx, cancel := context.WithCancel(r.context)
+	defer cancel()
+	tickEvery := r.health.stallTick
+	if tickEvery <= 0 {
+		tickEvery = defaultWarpHealth.stallTick
+	}
+	var interrupted atomic.Bool
+	stop := make(chan struct{})
+	watched := make(chan struct{})
+	go func() {
+		defer close(watched)
+		tick := time.NewTicker(tickEvery)
+		defer tick.Stop()
+		var stall stallDetector
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ctx.Done():
+				return
+			case <-r.warpCheck:
+			case <-tick.C:
+				rx, tx, sent, ok := tunnel.traffic()
+				if !ok || !stall.add(tunnel, time.Now(), rx, tx, sent, r.health.stallWindow) {
+					continue
+				}
+			}
+			interrupted.Store(true)
+			cancel()
+			return
+		}
+	}()
+	job(ctx)
+	close(stop)
+	<-watched
+	if interrupted.Load() {
+		flowRouterLogf("WARP %s: background search stopped to check the tunnel", tunnel.endpoint)
+	}
+	return interrupted.Load()
 }
 
 // A tunnel selection settled for (not every test site open outside the
@@ -267,8 +332,8 @@ func (r *flowRouter) upgradeFound(found bool) {
 // the probe identity it was just tested with (opening it with the live key
 // would take Cloudflare's session from the live tunnel and cut every
 // connection), and the identities swap roles. Connections of the old tunnel
-// finish there (drainWarp).
-func (r *flowRouter) upgradeWarp(current *warpTunnel) {
+// finish there (drainWarp). parent cancels the search (runWarpBackground).
+func (r *flowRouter) upgradeWarp(parent context.Context, current *warpTunnel) {
 	r.warpMutex.Lock()
 	r.warpUpgradeTried = time.Now()
 	probeTarget := r.warpProbeTarget
@@ -277,10 +342,15 @@ func (r *flowRouter) upgradeWarp(current *warpTunnel) {
 	if config.Probe == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.context, warpUpgradeTimeout)
+	ctx, cancel := context.WithTimeout(parent, warpUpgradeTimeout)
 	defer cancel()
 	found := false
-	defer func() { r.upgradeFound(found) }()
+	defer func() {
+		// A search cut short found nothing either way: the pause stays.
+		if found || parent.Err() == nil {
+			r.upgradeFound(found)
+		}
+	}()
 	evaluated, err := selectWarpEvaluations(ctx, config, probeTarget, r.resolveWarpHost, r.warpSelection(), current.endpoint)
 	if err != nil {
 		flowRouterLogf("WARP upgrade: no better pair than %s: %v", current.endpoint, err)
@@ -316,7 +386,16 @@ func (r *flowRouter) upgradeWarp(current *warpTunnel) {
 	}
 	found = true
 	r.warp = tunnel
-	r.warpBackups = tunnel.backups
+	// The round stopped at the first ideal pair, so tunnel.backups is
+	// usually empty, and backup checks wait while the old tunnel drains:
+	// the other pairs that passed and the old backups stand in.
+	var passed []warpEvaluation
+	for _, evaluation := range evaluated {
+		if !evaluation.perfect() && evaluation.candidate.endpoint != current.endpoint {
+			passed = append(passed, evaluation)
+		}
+	}
+	r.warpBackups = mergeWarpBackups(tunnel.candidate, tunnel.backups, passed, r.warpBackups)
 	r.warpSwapped = !r.warpSwapped
 	r.warpDraining = current
 	r.warpDialFailures = 0
@@ -371,17 +450,11 @@ func (d *stallDetector) add(tunnel *warpTunnel, at time.Time, rx, tx, sent uint6
 // opened over the cut flow cannot come back and are closed, so apps
 // reconnect at once. Only when that fails is a new endpoint selected.
 func (r *flowRouter) recoverWarp(tunnel *warpTunnel, reason string) {
-	// A pair cut again soon after a reconnect is being cut over and over:
-	// a backup is the quicker way out.
-	r.warpMutex.Lock()
-	recent := time.Since(r.warpLastCut) < warpRecentCut
-	r.warpLastCut = time.Now()
-	r.warpNeededRecovery = time.Now()
-	r.warpMutex.Unlock()
-	if recent {
+	backupFirst := r.noteWarpCut()
+	if backupFirst {
 		flowRouterLogf("WARP %s: %s again within %s of a reconnect; trying a backup", tunnel.endpoint, reason, warpRecentCut)
 	}
-	if !recent && tunnel.device != nil && r.context.Err() == nil {
+	if !backupFirst && tunnel.device != nil && r.context.Err() == nil {
 		if err := tunnel.reconnect(); err == nil {
 			ctx, cancel := context.WithTimeout(r.context, 6*time.Second)
 			_, pingErr := tunnel.ping(ctx, 4)
@@ -409,6 +482,19 @@ func (r *flowRouter) recoverWarp(tunnel *warpTunnel, reason string) {
 		return
 	}
 	r.reselectWarp(tunnel, reason)
+}
+
+// noteWarpCut records a cut and reports whether to skip the reconnect: a pair
+// cut again soon after a reconnect is being cut over and over, and a backup
+// is the quicker way out. Without a backup the reconnect (a second or two)
+// still beats a selection round (up to half a minute).
+func (r *flowRouter) noteWarpCut() (backupFirst bool) {
+	r.warpMutex.Lock()
+	defer r.warpMutex.Unlock()
+	recent := time.Since(r.warpLastCut) < warpRecentCut
+	r.warpLastCut = time.Now()
+	r.warpNeededRecovery = time.Now()
+	return recent && len(r.warpBackups) > 0
 }
 
 // checkWarpOnce checks the selected tunnel and replaces it if it is dead, or
