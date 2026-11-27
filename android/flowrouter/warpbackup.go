@@ -161,8 +161,9 @@ func (r *flowRouter) warpBackupCheckDue(tunnel *warpTunnel) bool {
 
 // checkWarpBackups re-tests the backups with the probe identity until one
 // passes, dropping the dead ones, and refills an empty list on a network
-// that recently cut the tunnel.
-func (r *flowRouter) checkWarpBackups(current *warpTunnel) {
+// that recently cut the tunnel. parent cancels the check (runWarpBackground);
+// a backup whose test was cut short is kept.
+func (r *flowRouter) checkWarpBackups(parent context.Context, current *warpTunnel) {
 	r.warpMutex.Lock()
 	r.warpBackupChecked = time.Now()
 	backups := append([]warpEvaluation(nil), r.warpBackups...)
@@ -178,10 +179,13 @@ func (r *flowRouter) checkWarpBackups(current *warpTunnel) {
 
 	var dead []string
 	for _, backup := range backups {
-		ctx, cancel := context.WithTimeout(r.context, warpBackupCheckTime+2*time.Second)
+		ctx, cancel := context.WithTimeout(parent, warpBackupCheckTime+2*time.Second)
 		tunnel, err := r.openWarpPair(ctx, probing, backup.candidate, probeTarget, warpBackupCheckTime)
 		cancel()
-		if r.context.Err() != nil {
+		if parent.Err() != nil {
+			if tunnel != nil {
+				tunnel.close()
+			}
 			return
 		}
 		if err == nil {
@@ -192,7 +196,7 @@ func (r *flowRouter) checkWarpBackups(current *warpTunnel) {
 		dead = append(dead, backup.candidate.endpoint)
 	}
 	r.warpMutex.Lock()
-	kept := r.warpBackups[:0]
+	kept := make([]warpEvaluation, 0, len(r.warpBackups))
 	for _, backup := range r.warpBackups {
 		if !containsString(dead, backup.candidate.endpoint) {
 			kept = append(kept, backup)
@@ -207,7 +211,7 @@ func (r *flowRouter) checkWarpBackups(current *warpTunnel) {
 	if !empty || !refillDue {
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.context, warpBackupRefillTime)
+	ctx, cancel := context.WithTimeout(parent, warpBackupRefillTime)
 	evaluated, err := selectWarpEvaluations(ctx, config, probeTarget, r.resolveWarpHost, r.warpSelection(), current.endpoint)
 	cancel()
 	if err != nil {
@@ -221,6 +225,25 @@ func (r *flowRouter) checkWarpBackups(current *warpTunnel) {
 	count := len(r.warpBackups)
 	r.warpMutex.Unlock()
 	flowRouterLogf("WARP backups: %d ready", count)
+}
+
+// mergeWarpBackups is the best warpBackupsMax pairs of lists, without
+// failed ones, duplicates or the live pair.
+func mergeWarpBackups(live warpCandidate, lists ...[]warpEvaluation) []warpEvaluation {
+	key := func(candidate warpCandidate) string { return candidate.endpoint + "|" + candidate.transport.String() }
+	seen := map[string]bool{key(live): true}
+	var merged []warpEvaluation
+	for _, list := range lists {
+		for _, evaluation := range list {
+			if evaluation.err != nil || seen[key(evaluation.candidate)] {
+				continue
+			}
+			seen[key(evaluation.candidate)] = true
+			merged = append(merged, evaluation)
+		}
+	}
+	sort.SliceStable(merged, func(i, j int) bool { return merged[i].better(merged[j]) })
+	return firstBackups(merged)
 }
 
 func containsString(list []string, value string) bool {
