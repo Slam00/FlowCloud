@@ -12,8 +12,8 @@ android {
         applicationId = "local.flowcloud.android"
         minSdk = 24
         targetSdk = 34
-        versionCode = 35
-        versionName = "0.2.33"
+        versionCode = 36
+        versionName = "0.2.34"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

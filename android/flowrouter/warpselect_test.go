@@ -86,3 +86,50 @@ func TestParseWarpConfigProbe(t *testing.T) {
 		t.Fatal("a broken probe device must be ignored, not fail the profile")
 	}
 }
+
+func TestQuicPrefersWarp(t *testing.T) {
+	for _, host := range []string{"rr1---sn-gvnuxaxjvh-axq6.googlevideo.com", "www.youtube.com", "i.ytimg.com", "YT3.GGPHT.COM.", "youtubei.googleapis.com"} {
+		if !quicPrefersWarp(host) {
+			t.Errorf("%s must go through WARP", host)
+		}
+	}
+	for _, host := range []string{"", "notyoutube.com", "www.google.com", "googleapis.com"} {
+		if quicPrefersWarp(host) {
+			t.Errorf("%s must keep the normal route", host)
+		}
+	}
+}
+
+func TestQuicStallTracker(t *testing.T) {
+	now := time.Unix(1000, 0)
+	tracker := newQuicStallTracker()
+	tracker.now = func() time.Time { return now }
+	target := "142.251.1.1:443"
+	for index := 0; index < 20; index++ {
+		if tracker.up(target) {
+			t.Fatal("a flow that never received anything is not a stall (blocked QUIC falls back on its own)")
+		}
+	}
+	tracker.down(target)
+	now = now.Add(time.Second)
+	for index := 0; index < quicStallPackets; index++ {
+		if tracker.up(target) {
+			t.Fatal("a second of silence is no stall")
+		}
+	}
+	now = now.Add(quicStallSilence)
+	if !tracker.up(target) {
+		t.Fatal("silence with the client still sending is a stall")
+	}
+	if tracker.up(target) {
+		t.Fatal("a stall is reported once")
+	}
+	tracker.down(target)
+	now = now.Add(10 * time.Second)
+	for index := 0; index < quicStallPackets-1; index++ {
+		tracker.up(target)
+	}
+	if !tracker.up(target) {
+		t.Fatal("after new data a later silence is reported again")
+	}
+}
