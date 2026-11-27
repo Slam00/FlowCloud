@@ -156,3 +156,19 @@ func TestQuicStallTracker(t *testing.T) {
 		t.Fatal("after new data a later silence is reported again")
 	}
 }
+
+func TestAWG3LinesAreAcceptedByDevice(t *testing.T) {
+	key := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+	config, err := parseWarpConfig(`{"private_key":"` + key + `","peer_public_key":"` + key + `","endpoint":"127.0.0.1:9","address_v4":"172.16.0.2"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tunnel, err := openWarp(config, "127.0.0.1:9", defaultAWGProfile(), nil)
+	if err != nil {
+		t.Fatalf("AWG 3 lines rejected: %v", err)
+	}
+	if err := tunnel.reconnect(); err != nil {
+		t.Fatalf("reconnect with a keepalive range: %v", err)
+	}
+	tunnel.close()
+}

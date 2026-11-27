@@ -12,7 +12,6 @@ import (
 	mrand "math/rand"
 	"net"
 	"net/netip"
-	"strconv"
 	"strings"
 	"time"
 
@@ -133,7 +132,6 @@ func transportLabel(candidate warpCandidate) string {
 		return "AmneziaWG"
 	}
 }
-
 
 // ping measures the TCP handshake time through the tunnel, the best of a few
 // attempts. Each attempt also needs an HTTP answer to count: a tunnel that
@@ -321,13 +319,14 @@ func openWarp(
 	)
 	lines := []string{"private_key=" + hex.EncodeToString(privateKey)}
 	lines = append(lines, profile.uapi()...)
+	lines = append(lines, awg3DeviceLines(mrand.New(mrand.NewSource(time.Now().UnixNano())))...)
 	lines = append(lines,
 		"replace_peers=true",
 		"public_key="+hex.EncodeToString(publicKey),
 		"endpoint="+endpoint,
 		"replace_allowed_ips=true",
 		"allowed_ip=0.0.0.0/0",
-		"persistent_keepalive_interval="+strconv.Itoa(config.PersistentKA),
+		"persistent_keepalive_interval="+keepaliveRange(config.PersistentKA),
 	)
 	uapi := strings.Join(lines, "\n") + "\n\n"
 	if err = dev.IpcSet(uapi); err != nil {

@@ -101,7 +101,7 @@ func (t *warpTunnel) reconnect() error {
 		"endpoint=" + t.candidate.endpoint,
 		"replace_allowed_ips=true",
 		"allowed_ip=0.0.0.0/0",
-		fmt.Sprintf("persistent_keepalive_interval=%d", t.keepalive),
+		"persistent_keepalive_interval=" + keepaliveRange(t.keepalive),
 	}
 	if err := t.device.IpcSet(strings.Join(lines, "\n") + "\n\n"); err != nil {
 		return fmt.Errorf("reconnect to %s: %w", t.candidate.endpoint, err)
