@@ -67,6 +67,7 @@ var i1Variants = []i1Variant{
 	{"quic-alt2", staticI1(warpI1QUICAlt2)},
 	{"quic-gen", hostI1(genQUICI1)},
 	{"dns", hostI1(genDNSI1)},
+	{"dns-answer", hostI1(genDNSAnswerI1)},
 	{"stun", hostI1(genSTUNI1)},
 	{"sip", hostI1(genSIPI1)},
 	{"none", staticI1("")},

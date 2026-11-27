@@ -7,6 +7,7 @@ require (
 	github.com/Diniboy1123/usque v1.5.1-0.20260720063354-6aa03fc97d12
 	github.com/amnezia-vpn/amneziawg-go/v3 v3.1.20260828
 	github.com/quic-go/quic-go v0.60.0
+	golang.org/x/net v0.56.0
 )
 
 require (
@@ -20,7 +21,6 @@ require (
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	golang.org/x/crypto v0.53.0 // indirect
 	golang.org/x/exp v0.0.0-20260611194520-c48552f49976 // indirect
-	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
 	golang.org/x/time v0.15.0 // indirect

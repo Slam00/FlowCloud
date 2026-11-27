@@ -102,6 +102,42 @@ func genDNSI1(rng *mrand.Rand, host string) (string, error) {
 	return c.String(), nil
 }
 
+const (
+	dnsAnswersMax = 4
+	dnsTTLMin     = 60
+	dnsTTLMax     = 3600
+)
+
+// genDNSAnswerI1 builds a DNS response to an A query for host: one to
+// dnsAnswersMax A records, each pointing back at the question name, with
+// addresses and the transaction id random for every handshake. A response
+// is the other half of the most common UDP exchange there is (the idea comes
+// from Amnezia VPN's default I1, a DNS answer).
+func genDNSAnswerI1(rng *mrand.Rand, host string) (string, error) {
+	qname, err := dnsName(host)
+	if err != nil {
+		return "", err
+	}
+	answers := randRange(rng, 1, dnsAnswersMax)
+	header := []byte{0x81, 0x80, 0, 1} // response, recursion desired and available; one question
+	header = binary.BigEndian.AppendUint16(header, uint16(answers))
+	header = append(header, 0, 0, 0, 0)
+
+	c := &cpsChain{}
+	c.tag("r", 2) // transaction id
+	c.bytes(header)
+	c.bytes(append(qname, 0, 1, 0, 1))
+	ttl := uint32(randRange(rng, dnsTTLMin, dnsTTLMax))
+	for range answers {
+		record := []byte{0xc0, 0x0c, 0, 1, 0, 1} // name pointer to the question, A, IN
+		record = binary.BigEndian.AppendUint32(record, ttl)
+		record = binary.BigEndian.AppendUint16(record, 4)
+		c.bytes(record)
+		c.tag("r", 4) // address
+	}
+	return c.String(), nil
+}
+
 func dnsName(host string) ([]byte, error) {
 	var out []byte
 	for _, label := range strings.Split(strings.Trim(host, "."), ".") {
