@@ -61,3 +61,22 @@ func TestDrainWarpClosesReplacedTunnelWhenIdle(t *testing.T) {
 		t.Fatal("draining tunnel still set")
 	}
 }
+
+func TestUpgradeWaitGrowsUntilFound(t *testing.T) {
+	r := &flowRouter{}
+	var waits []time.Duration
+	for range 5 {
+		r.upgradeFound(false)
+		waits = append(waits, r.upgradeWaitLocked())
+	}
+	want := []time.Duration{20 * time.Minute, 40 * time.Minute, time.Hour, time.Hour, time.Hour}
+	for index := range want {
+		if waits[index] != want[index] {
+			t.Fatalf("waits %v, want %v", waits, want)
+		}
+	}
+	r.upgradeFound(true)
+	if got := r.upgradeWaitLocked(); got != warpUpgradeEvery {
+		t.Fatalf("after success %s, want %s", got, warpUpgradeEvery)
+	}
+}

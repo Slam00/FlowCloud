@@ -191,7 +191,7 @@ func (r *flowRouter) watchWarp() {
 		r.warpMutex.Lock()
 		tunnel, reselecting := r.warp, r.warpReselecting
 		upgradeDue := tunnel != nil && !tunnel.ideal && r.warpConfig.Probe != nil && r.warpDraining == nil &&
-			time.Since(tunnel.openedAt) >= warpUpgradeAfter && time.Since(r.warpUpgradeTried) >= warpUpgradeEvery
+			time.Since(tunnel.openedAt) >= warpUpgradeAfter && time.Since(r.warpUpgradeTried) >= r.upgradeWaitLocked()
 		r.warpMutex.Unlock()
 		if tunnel == nil || reselecting {
 			stall.reset()
@@ -221,14 +221,40 @@ func (r *flowRouter) watchWarp() {
 // warpUpgradeEvery. Only with the probe device: testing with the main key
 // would take the session from the live tunnel.
 const (
-	warpUpgradeAfter   = 90 * time.Second
-	warpUpgradeEvery   = 10 * time.Minute
+	warpUpgradeAfter = 90 * time.Second
+	warpUpgradeEvery = 10 * time.Minute
+	// Each search that finds nothing better doubles the pause, up to
+	// warpUpgradeMaxWait: on a network without a good pair the search would
+	// otherwise cost traffic and battery every 10 minutes. A new network
+	// starts a new router, so the pause starts over there.
+	warpUpgradeMaxWait = time.Hour
 	warpUpgradeTimeout = 30 * time.Second
-	// warpDrainMax bounds how long a replaced tunnel keeps its connections;
-	// shorter than warpUpgradeEvery, since the next search tests with its
-	// identity.
-	warpDrainMax = 5 * time.Minute
+	// warpDrainMax bounds how long a replaced tunnel keeps its connections
+	// (a game or a call). A successful upgrade leaves an ideal tunnel, which
+	// is not upgraded again, so only a reselection ends a drain earlier.
+	warpDrainMax = time.Hour
 )
+
+// upgradeWaitLocked is the pause before the next upgrade search; the caller
+// holds warpMutex.
+func (r *flowRouter) upgradeWaitLocked() time.Duration {
+	if r.warpUpgradeWait < warpUpgradeEvery {
+		return warpUpgradeEvery
+	}
+	return r.warpUpgradeWait
+}
+
+// upgradeFound records an upgrade search's outcome for the next pause.
+func (r *flowRouter) upgradeFound(found bool) {
+	r.warpMutex.Lock()
+	defer r.warpMutex.Unlock()
+	if found {
+		r.warpUpgradeWait = 0
+		return
+	}
+	r.warpUpgradeWait = min(2*r.upgradeWaitLocked(), warpUpgradeMaxWait)
+	flowRouterLogf("WARP upgrade: next search in %s", r.warpUpgradeWait)
+}
 
 // upgradeWarp looks for an ideal pair with the probe identity and moves new
 // connections to it without touching the live tunnel: the new pair opens with
@@ -247,6 +273,8 @@ func (r *flowRouter) upgradeWarp(current *warpTunnel) {
 	}
 	ctx, cancel := context.WithTimeout(r.context, warpUpgradeTimeout)
 	defer cancel()
+	found := false
+	defer func() { r.upgradeFound(found) }()
 	evaluated, err := selectWarpEvaluations(ctx, config, probeTarget, r.resolveWarpHost, r.warpSelection(), current.endpoint)
 	if err != nil {
 		flowRouterLogf("WARP upgrade: no better pair than %s: %v", current.endpoint, err)
@@ -278,6 +306,7 @@ func (r *flowRouter) upgradeWarp(current *warpTunnel) {
 		tunnel.close()
 		return
 	}
+	found = true
 	r.warp = tunnel
 	r.warpSwapped = !r.warpSwapped
 	r.warpDraining = current

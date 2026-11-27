@@ -43,6 +43,9 @@ type flowRouter struct {
 	// warpUpgradeTried is the last background search for a better pair
 	// than a non-ideal tunnel.
 	warpUpgradeTried time.Time
+	// warpUpgradeWait is the current pause between upgrade searches (0:
+	// warpUpgradeEvery); it grows while searches find nothing better.
+	warpUpgradeWait time.Duration
 	// warpSwapped: an upgrade moved traffic to the probe identity, so the
 	// main one probes now (activeWarpConfig).
 	warpSwapped bool
