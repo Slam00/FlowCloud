@@ -305,8 +305,9 @@ func applyWarpWinner(
 	evaluated []warpEvaluation,
 	started time.Time,
 ) (*warpTunnel, error) {
-	ordered := append([]warpEvaluation(nil), evaluated...)
-	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].better(ordered[j]) })
+	sorted := append([]warpEvaluation(nil), evaluated...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].better(sorted[j]) })
+	ordered := sorted
 	if len(ordered) > 1+warpMaxBackups {
 		ordered = ordered[:1+warpMaxBackups]
 	}
@@ -343,6 +344,7 @@ func applyWarpWinner(
 		tunnel.colo = evaluation.colo
 		tunnel.ideal = evaluation.perfect()
 		tunnel.openedAt = time.Now()
+		tunnel.backups = firstBackups(sorted[index+1:])
 		selection.cache.rememberEvaluated(selection.networkKey, candidate, evaluation.latency, evaluation.colo,
 			evaluation.sites > 0 && evaluation.sitesOK == evaluation.sites)
 		backup := ""

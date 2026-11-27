@@ -52,6 +52,12 @@ type flowRouter struct {
 	// warpDraining is the tunnel an upgrade replaced: its connections finish
 	// there while new ones use the new tunnel.
 	warpDraining *warpTunnel
+	// Backups of the live tunnel and their upkeep (warpbackup.go).
+	warpBackups        []warpEvaluation
+	warpLastCut        time.Time
+	warpNeededRecovery time.Time
+	warpBackupChecked  time.Time
+	warpBackupRefilled time.Time
 	// youtubeWarpUntil: a YouTube video stalled over TCP through ByeDPI on
 	// this network, so YouTube goes through WARP until then.
 	youtubeWarpUntil time.Time
@@ -59,8 +65,10 @@ type flowRouter struct {
 	health           warpHealthSettings
 	pingWarp         func(context.Context, *warpTunnel) error
 	openWarpRoute    func(context.Context) (*warpTunnel, error)
-	closeOnce        sync.Once
-	wait             sync.WaitGroup
+	// openWarpPair opens one known pair (backups); tests replace it.
+	openWarpPair func(ctx context.Context, config warpConfig, candidate warpCandidate, probeTarget string, timeout time.Duration) (*warpTunnel, error)
+	closeOnce    sync.Once
+	wait         sync.WaitGroup
 }
 
 const warpRetryInterval = 30 * time.Second
@@ -114,6 +122,9 @@ func newFlowRouter(listenAddress, byeDPIAddress, dnsRelayAddress, warpRulesText,
 	router.health = defaultWarpHealth
 	router.pingWarp = router.defaultPingWarp
 	router.openWarpRoute = router.defaultOpenWarpRoute
+	router.openWarpPair = func(ctx context.Context, config warpConfig, candidate warpCandidate, probeTarget string, timeout time.Duration) (*warpTunnel, error) {
+		return openWarpPair(ctx, config, candidate, router.resolveWarpHost, probeTarget, timeout)
+	}
 	return router, nil
 }
 
@@ -211,6 +222,9 @@ func (r *flowRouter) start() error {
 				r.resolveWarpHost,
 				r.warpSelection(),
 			)
+			if r.warp != nil {
+				r.warpBackups = r.warp.backups
+			}
 		}
 		r.warpMutex.Unlock()
 		cancelProbe()

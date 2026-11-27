@@ -124,6 +124,9 @@ type warpTunnel struct {
 	peerHex   string
 	keepalive int
 	conns     trackedConns
+	// backups are the other pairs of the round that picked this one, best
+	// first (warpbackup.go).
+	backups []warpEvaluation
 }
 
 // transportLabel is the user-facing protocol name of a candidate.

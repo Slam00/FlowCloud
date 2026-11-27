@@ -203,6 +203,12 @@ func (r *flowRouter) watchWarp() {
 			next = time.Now().Add(r.health.interval)
 			continue
 		}
+		if r.warpBackupCheckDue(tunnel) {
+			r.checkWarpBackups(tunnel)
+			stall.reset()
+			next = time.Now().Add(r.health.interval)
+			continue
+		}
 		rx, tx, sent, ok := tunnel.traffic()
 		if !ok {
 			continue
@@ -288,6 +294,8 @@ func (r *flowRouter) upgradeWarp(current *warpTunnel) {
 	}
 	if len(ideal) == 0 {
 		flowRouterLogf("WARP upgrade: no pair opens every test site outside the avoided locations; keeping %s", current.endpoint)
+		// They still passed with the probe identity: good backups.
+		r.offerWarpBackups(current, evaluated)
 		return
 	}
 	// The probe identity carries the new tunnel; its Probe is the live one,
@@ -308,6 +316,7 @@ func (r *flowRouter) upgradeWarp(current *warpTunnel) {
 	}
 	found = true
 	r.warp = tunnel
+	r.warpBackups = tunnel.backups
 	r.warpSwapped = !r.warpSwapped
 	r.warpDraining = current
 	r.warpDialFailures = 0
@@ -362,7 +371,17 @@ func (d *stallDetector) add(tunnel *warpTunnel, at time.Time, rx, tx, sent uint6
 // opened over the cut flow cannot come back and are closed, so apps
 // reconnect at once. Only when that fails is a new endpoint selected.
 func (r *flowRouter) recoverWarp(tunnel *warpTunnel, reason string) {
-	if tunnel.device != nil && r.context.Err() == nil {
+	// A pair cut again soon after a reconnect is being cut over and over:
+	// a backup is the quicker way out.
+	r.warpMutex.Lock()
+	recent := time.Since(r.warpLastCut) < warpRecentCut
+	r.warpLastCut = time.Now()
+	r.warpNeededRecovery = time.Now()
+	r.warpMutex.Unlock()
+	if recent {
+		flowRouterLogf("WARP %s: %s again within %s of a reconnect; trying a backup", tunnel.endpoint, reason, warpRecentCut)
+	}
+	if !recent && tunnel.device != nil && r.context.Err() == nil {
 		if err := tunnel.reconnect(); err == nil {
 			ctx, cancel := context.WithTimeout(r.context, 6*time.Second)
 			_, pingErr := tunnel.ping(ctx, 4)
@@ -385,6 +404,9 @@ func (r *flowRouter) recoverWarp(tunnel *warpTunnel, reason string) {
 				flowRouterLogf("WARP %s: reconnect from a new source port carried no data: %v", tunnel.endpoint, pingErr)
 			}
 		}
+	}
+	if r.switchWarpBackup(tunnel, reason) {
+		return
 	}
 	r.reselectWarp(tunnel, reason)
 }
@@ -471,6 +493,9 @@ func (r *flowRouter) reselectWarp(dead *warpTunnel, reason string) {
 		err = errors.New("WARP selection returned no tunnel")
 	}
 	r.warp, r.warpErr = tunnel, err
+	if tunnel != nil {
+		r.warpBackups = tunnel.backups
+	}
 	r.warpMutex.Unlock()
 	if err != nil {
 		flowRouterLogf("WARP replacement failed, retrying in %s: %v", warpRetryInterval, err)
