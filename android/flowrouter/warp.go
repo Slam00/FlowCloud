@@ -112,6 +112,11 @@ type warpTunnel struct {
 	candidate warpCandidate
 	// colo is the Cloudflare location the tunnel exits from, "" when unknown.
 	colo string
+	// ideal is false when selection settled for a pair that did not open
+	// every test site outside the avoided locations (or was not site-tested
+	// in time); the watcher looks for a better one in the background.
+	ideal    bool
+	openedAt time.Time
 	// AmneziaWG tunnels keep their device, counting bind and peer for the
 	// stall detector and reconnect; MASQUE tunnels leave them nil.
 	device    *device.Device

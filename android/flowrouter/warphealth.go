@@ -138,9 +138,17 @@ func (r *flowRouter) watchWarp() {
 		}
 		r.warpMutex.Lock()
 		tunnel, reselecting := r.warp, r.warpReselecting
+		upgradeDue := tunnel != nil && !tunnel.ideal && r.warpConfig.Probe != nil &&
+			time.Since(tunnel.openedAt) >= warpUpgradeAfter && time.Since(r.warpUpgradeTried) >= warpUpgradeEvery
 		r.warpMutex.Unlock()
 		if tunnel == nil || reselecting {
 			stall.reset()
+			continue
+		}
+		if upgradeDue {
+			r.upgradeWarp(tunnel)
+			stall.reset()
+			next = time.Now().Add(r.health.interval)
 			continue
 		}
 		rx, tx, sent, ok := tunnel.traffic()
@@ -153,6 +161,65 @@ func (r *flowRouter) watchWarp() {
 			next = time.Now().Add(r.health.interval)
 		}
 	}
+}
+
+// A tunnel selection settled for (not every test site open outside the
+// avoided locations, or no time to test) gets a background search for a
+// better pair warpUpgradeAfter after it came up, and again at most every
+// warpUpgradeEvery. Only with the probe device: testing with the main key
+// would take the session from the live tunnel.
+const (
+	warpUpgradeAfter   = 90 * time.Second
+	warpUpgradeEvery   = 10 * time.Minute
+	warpUpgradeTimeout = 30 * time.Second
+)
+
+// upgradeWarp looks for an ideal pair with the probe device and moves to it.
+// Connections over the old tunnel are closed (apps reconnect). If the new
+// pair carries nothing with the main key, the old tunnel reconnects, since
+// the attempt took its Cloudflare session.
+func (r *flowRouter) upgradeWarp(current *warpTunnel) {
+	r.warpMutex.Lock()
+	r.warpUpgradeTried = time.Now()
+	probeTarget := r.warpProbeTarget
+	r.warpMutex.Unlock()
+	ctx, cancel := context.WithTimeout(r.context, warpUpgradeTimeout)
+	defer cancel()
+	evaluated, err := selectWarpEvaluations(ctx, r.warpConfig, probeTarget, r.resolveWarpHost, r.warpSelection(), current.endpoint)
+	if err != nil {
+		flowRouterLogf("WARP upgrade: no better pair than %s: %v", current.endpoint, err)
+		return
+	}
+	var ideal []warpEvaluation
+	for _, evaluation := range evaluated {
+		if evaluation.perfect() {
+			ideal = append(ideal, evaluation)
+		}
+	}
+	if len(ideal) == 0 {
+		flowRouterLogf("WARP upgrade: no pair opens every test site outside the avoided locations; keeping %s", current.endpoint)
+		return
+	}
+	started := time.Now()
+	tunnel, err := applyWarpWinner(ctx, r.warpConfig, probeTarget, r.resolveWarpHost, r.warpSelection(), ideal, started)
+	if err != nil {
+		flowRouterLogf("WARP upgrade: %v; reconnecting %s", err, current.endpoint)
+		_ = current.reconnect()
+		return
+	}
+	r.warpMutex.Lock()
+	if r.warp != current || r.context.Err() != nil {
+		r.warpMutex.Unlock()
+		tunnel.close()
+		return
+	}
+	r.warp = tunnel
+	r.warpDialFailures = 0
+	r.warpMutex.Unlock()
+	closed := current.conns.closeAll()
+	current.close()
+	flowRouterLogf("WARP upgrade: %s -> %s (exit %s); closed %d connections of the old tunnel",
+		current.endpoint, tunnel.endpoint, orDash(tunnel.colo), closed)
 }
 
 // stallDetector watches a tunnel's byte counters.

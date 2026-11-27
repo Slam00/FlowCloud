@@ -37,6 +37,13 @@ const (
 	warpApplyTimeout    = 6 * time.Second
 	warpFastPathTries   = 2
 	warpMaxBackups      = 3
+	// warpApplyReserve of the caller's deadline stays for the main-key
+	// check; the site stage starts a pair only with warpSiteStageCost left.
+	warpApplyReserve  = 5 * time.Second
+	warpSiteStageCost = 3 * time.Second
+	// warpSiteTimeout bounds one site check: a site the exit blocks must not
+	// eat the whole start budget.
+	warpSiteTimeout = 3 * time.Second
 )
 
 // warpAvoidColos are Cloudflare locations from which WARP traffic leaves
@@ -102,14 +109,43 @@ func openWorkingWarp(
 	selection warpSelection,
 ) (*warpTunnel, error) {
 	started := time.Now()
+	evaluated, err := selectWarpEvaluations(ctx, config, probeTarget, resolver, selection, "")
+	if err != nil {
+		return nil, err
+	}
+	return applyWarpWinner(ctx, config, probeTarget, resolver, selection, evaluated, started)
+}
+
+// selectWarpEvaluations runs the fast path, the ping round and the site stage
+// with the probing identity, within a budget: it stops looking for the ideal
+// pair warpApplyReserve before ctx's deadline, keeping that time for the
+// main-key check. With no pair site-tested by then, the ping round's passes
+// come back untested (sites 0), fastest first: the pre-0.2.33 behaviour of
+// taking the first pair that carried data. exclude skips one endpoint.
+func selectWarpEvaluations(
+	ctx context.Context,
+	config warpConfig,
+	probeTarget string,
+	resolver func(context.Context, string) ([]netip.Addr, error),
+	selection warpSelection,
+	exclude string,
+) ([]warpEvaluation, error) {
 	probing := config
 	if config.Probe != nil {
 		probing = *config.Probe
 		probing.Masque = config.Masque
 	}
+	budgetEnd := time.Now().Add(25 * time.Second)
+	if deadline, ok := ctx.Deadline(); ok {
+		budgetEnd = deadline.Add(-warpApplyReserve)
+	}
+	budgetContext, cancelBudget := context.WithDeadline(ctx, budgetEnd)
+	defer cancelBudget()
+	enoughFor := func(need time.Duration) bool { return time.Until(budgetEnd) >= need }
+
 	sites := warpSites{youtube: probeTarget}
 	if resolver != nil {
-		resolveContext, cancel := context.WithTimeout(ctx, 3*time.Second)
+		resolveContext, cancel := context.WithTimeout(budgetContext, 3*time.Second)
 		if addresses, err := resolver(resolveContext, "telegram.org"); err == nil && len(addresses) > 0 {
 			sites.telegram = net.JoinHostPort(addresses[0].String(), "443")
 		}
@@ -123,40 +159,48 @@ func openWorkingWarp(
 		cache.noteColo(network, evaluation.candidate.endpoint, evaluation.colo)
 		evaluated = append(evaluated, evaluation)
 	}
-	finish := func() (*warpTunnel, error) {
-		return applyWarpWinner(ctx, config, probeTarget, resolver, selection, evaluated, started)
+	done := func() bool {
+		for _, evaluation := range evaluated {
+			if evaluation.perfect() {
+				return true
+			}
+		}
+		return false
 	}
 
 	// 1. Fast path.
 	tried := map[string]bool{}
+	if exclude != "" {
+		tried[exclude+"|"+transportAWG.String()] = true
+	}
 	fast := 0
 	for _, entry := range cache.snapshot() {
-		if fast == warpFastPathTries || ctx.Err() != nil {
+		if fast == warpFastPathTries || !enoughFor(warpSiteStageCost) {
 			break
 		}
-		if entry.Network != network || !entry.Sites || warpAvoided(entry.Colo) {
+		if entry.Network != network || !entry.Sites || warpAvoided(entry.Colo) || entry.Endpoint == exclude {
 			continue
 		}
 		fast++
 		candidate := warpCandidate{endpoint: entry.Endpoint, profile: entry.Profile, source: sourceCached, transport: entry.Transport}
 		tried[candidate.endpoint+"|"+candidate.transport.String()] = true
-		evaluation := evaluateWarp(ctx, probing, candidate, resolver, sites, false)
+		evaluation := evaluateWarp(budgetContext, probing, candidate, resolver, sites, false)
 		if evaluation.err != nil {
 			cache.fail(network, candidate)
 			flowRouterLogf("WARP cached pair %s failed: %v", candidate.endpoint, evaluation.err)
 			continue
 		}
 		record(evaluation)
-		if evaluation.perfect() {
-			return finish()
+		if done() {
+			return evaluated, nil
 		}
 	}
 
 	// 2. Ping round.
-	shortlist, err := warpPingRound(ctx, probing, probeTarget, resolver, selection, tried)
+	shortlist, err := warpPingRound(budgetContext, probing, probeTarget, resolver, selection, tried)
 	if err != nil {
 		if len(evaluated) > 0 {
-			return finish()
+			return evaluated, nil
 		}
 		return nil, err
 	}
@@ -171,13 +215,15 @@ func openWorkingWarp(
 			return 0
 		}
 	}
+	untested := append([]warpCandidate(nil), shortlist...)
 	sort.SliceStable(shortlist, func(i, j int) bool { return rank(shortlist[i]) < rank(shortlist[j]) })
 	var deferred []warpCandidate
 	for _, candidate := range shortlist {
-		if ctx.Err() != nil {
+		if !enoughFor(warpSiteStageCost) {
+			flowRouterLogf("WARP selection: out of time for the site stage; taking the best pair so far")
 			break
 		}
-		evaluation := evaluateWarp(ctx, probing, candidate, resolver, sites, true)
+		evaluation := evaluateWarp(budgetContext, probing, candidate, resolver, sites, true)
 		if evaluation.err != nil {
 			continue
 		}
@@ -189,25 +235,28 @@ func openWorkingWarp(
 			continue
 		}
 		record(evaluation)
-		if evaluation.perfect() {
-			return finish()
+		if done() {
+			return evaluated, nil
 		}
 	}
 	for _, candidate := range deferred {
-		if ctx.Err() != nil || bestEvaluation(evaluated).sitesOK == sites.count() && len(evaluated) > 0 {
+		if !enoughFor(warpSiteStageCost) || len(evaluated) > 0 && bestEvaluation(evaluated).sitesOK == sites.count() {
 			break
 		}
-		if evaluation := evaluateWarp(ctx, probing, candidate, resolver, sites, false); evaluation.err == nil {
+		if evaluation := evaluateWarp(budgetContext, probing, candidate, resolver, sites, false); evaluation.err == nil {
 			record(evaluation)
 		}
 	}
 	if len(evaluated) == 0 {
-		if ctx.Err() != nil {
-			return nil, fmt.Errorf("start WARP route: %w", ctx.Err())
+		// Nothing site-tested in time: the ping round's passes, untested.
+		for _, candidate := range untested {
+			evaluated = append(evaluated, warpEvaluation{candidate: candidate, colo: cache.poolColo(network, candidate.endpoint)})
 		}
+	}
+	if len(evaluated) == 0 {
 		return nil, errors.New("start WARP route: no endpoint passed the site stage")
 	}
-	return finish()
+	return evaluated, nil
 }
 
 func bestEvaluation(evaluated []warpEvaluation) warpEvaluation {
@@ -269,6 +318,8 @@ func applyWarpWinner(
 		tunnel.transport = transportLabel(candidate)
 		tunnel.candidate = candidate
 		tunnel.colo = evaluation.colo
+		tunnel.ideal = evaluation.perfect()
+		tunnel.openedAt = time.Now()
 		selection.cache.rememberEvaluated(selection.networkKey, candidate, evaluation.latency, evaluation.colo,
 			evaluation.sites > 0 && evaluation.sitesOK == evaluation.sites)
 		backup := ""
@@ -324,21 +375,28 @@ func evaluateWarp(
 		return evaluation
 	}
 	defer tunnel.close()
-	if err = probeWarpRoute(evaluateContext, tunnel, sites.youtube); err != nil {
+	youtubeContext, cancelYouTube := context.WithTimeout(evaluateContext, warpSiteTimeout+time.Second)
+	err = probeWarpRoute(youtubeContext, tunnel, sites.youtube)
+	cancelYouTube()
+	if err != nil {
 		evaluation.err = err
 		return evaluation
 	}
 	evaluation.latency = time.Since(started)
-	evaluation.colo = warpTraceColo(evaluateContext, tunnel)
+	traceContext, cancelTrace := context.WithTimeout(evaluateContext, 2*time.Second)
+	evaluation.colo = warpTraceColo(traceContext, tunnel)
+	cancelTrace()
 	if deferAvoided && warpAvoided(evaluation.colo) {
 		evaluation.sites = -1
 		return evaluation
 	}
 	evaluation.sitesOK = 1 // YouTube
 	if sites.telegram != "" {
-		if err := httpsCheck(evaluateContext, tunnel, sites.telegram, "telegram.org", "/"); err == nil {
+		telegramContext, cancelTelegram := context.WithTimeout(evaluateContext, warpSiteTimeout)
+		if err := httpsCheck(telegramContext, tunnel, sites.telegram, "telegram.org", "/"); err == nil {
 			evaluation.sitesOK++
 		}
+		cancelTelegram()
 	}
 	return evaluation
 }

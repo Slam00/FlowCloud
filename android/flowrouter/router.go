@@ -40,6 +40,9 @@ type flowRouter struct {
 	warpDialFailures int
 	// warpReconnects counts WARP flows revived from a new source port.
 	warpReconnects int
+	// warpUpgradeTried is the last background search for a better pair
+	// than a non-ideal tunnel.
+	warpUpgradeTried time.Time
 	// youtubeWarpUntil: a YouTube video stalled over TCP through ByeDPI on
 	// this network, so YouTube goes through WARP until then.
 	youtubeWarpUntil time.Time
@@ -200,8 +203,14 @@ func (r *flowRouter) start() error {
 		if r.warpErr != nil {
 			flowRouterLogf("WARP preflight failed: %v", r.warpErr)
 			if r.warpRules.all {
-				_ = listener.Close()
-				return r.warpErr
+				// WARP mode starts anyway and keeps searching in the
+				// background; connections wait for the tunnel meanwhile.
+				flowRouterLogf("WARP mode: starting without a tunnel, searching in the background")
+				r.wait.Add(1)
+				go func() {
+					defer r.wait.Done()
+					r.reselectWarp(nil, "preflight found no pair in time")
+				}()
 			}
 		}
 		r.wait.Add(1)
@@ -467,43 +476,42 @@ func (r *flowRouter) dialWarpNetwork(ctx context.Context, network, target string
 		r.warpMutex.Unlock()
 		return nil, errors.New("WARP configuration is unavailable")
 	}
-	if r.warpReselecting {
-		// Fail fast: Auto mode falls back to ByeDPI until the new tunnel is up.
-		r.warpMutex.Unlock()
-		return nil, errWarpReselecting
-	}
-	if r.warpErr != nil && time.Since(r.warpTried) >= warpRetryInterval {
-		r.warpErr = nil
-	}
-	if r.warp == nil && r.warpErr == nil {
-		r.warpTried = time.Now()
-		if r.warpProbeTarget == "" {
-			addresses, resolveErr := r.resolveWarpHost(ctx, "www.youtube.com")
-			if resolveErr != nil {
-				r.warpErr = resolveErr
-			} else {
-				r.warpProbeTarget = net.JoinHostPort(addresses[0].String(), "443")
-			}
-		}
-		if r.warpErr == nil {
-			r.warp, r.warpErr = openWorkingWarp(
-				ctx,
-				r.warpConfig,
-				r.warpProbeTarget,
-				r.resolveWarpHost,
-				r.warpSelection(),
-			)
-		}
-	}
-	if r.warpErr != nil {
-		err := r.warpErr
-		r.warpMutex.Unlock()
-		return nil, err
-	}
 	tunnel := r.warp
-	r.warpMutex.Unlock()
 	if tunnel == nil {
-		return nil, errors.New("WARP is unavailable")
+		// Selection runs in the background only (it needs more time than
+		// one dial has). Auto mode fails fast and falls back to ByeDPI; WARP
+		// mode waits for the tunnel within the dial's own deadline.
+		startSearch := !r.warpReselecting && time.Since(r.warpTried) >= warpRetryInterval
+		waitForTunnel := r.warpRules.all
+		err := r.warpErr
+		if err == nil || r.warpReselecting {
+			err = errWarpReselecting
+		}
+		r.warpMutex.Unlock()
+		if startSearch {
+			r.wait.Add(1)
+			go func() {
+				defer r.wait.Done()
+				r.reselectWarp(nil, "a connection needs WARP")
+			}()
+		}
+		if !waitForTunnel {
+			return nil, err
+		}
+		for tunnel == nil {
+			select {
+			case <-ctx.Done():
+				return nil, fmt.Errorf("WARP is still searching for an endpoint: %w", ctx.Err())
+			case <-r.context.Done():
+				return nil, r.context.Err()
+			case <-time.After(250 * time.Millisecond):
+			}
+			r.warpMutex.Lock()
+			tunnel = r.warp
+			r.warpMutex.Unlock()
+		}
+	} else {
+		r.warpMutex.Unlock()
 	}
 	// The dial runs without the lock so WARP connections do not queue behind
 	// each other or behind a slow dial through a dying tunnel.
