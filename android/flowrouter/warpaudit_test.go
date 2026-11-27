@@ -234,3 +234,62 @@ func TestMergeWarpBackups(t *testing.T) {
 		}
 	}
 }
+
+// One MASQUE device serves every MASQUE tunnel: a MASQUE tunnel replaced by
+// another is closed at once instead of draining beside it.
+func TestMasqueUpgradeClosesOldTunnel(t *testing.T) {
+	router := newHealthTestRouter(t)
+	old := newFakeTunnel("162.159.198.1:443")
+	old.tunnel.candidate.transport = transportMasqueH3
+	replacement := newFakeTunnel("162.159.198.2:443")
+	replacement.tunnel.candidate.transport = transportMasqueH3
+	client, server := net.Pipe()
+	defer server.Close()
+	old.tunnel.conns.wrap(client)
+	router.warp = old.tunnel
+
+	if !router.adoptWarpUpgrade(old.tunnel, replacement.tunnel, nil) {
+		t.Fatal("upgrade not adopted")
+	}
+	router.warpMutex.Lock()
+	live, draining := router.warp, router.warpDraining
+	router.warpMutex.Unlock()
+	if live != replacement.tunnel || draining != nil {
+		t.Fatalf("live=%v draining=%v; want the new tunnel and no drain", live, draining)
+	}
+	if old.closed.Load() != 1 || old.tunnel.conns.count() != 0 {
+		t.Fatalf("old MASQUE tunnel closed=%d connections=%d", old.closed.Load(), old.tunnel.conns.count())
+	}
+}
+
+// AmneziaWG tunnels on the two identities drain side by side.
+func TestAWGUpgradeDrainsOldTunnel(t *testing.T) {
+	saved := warpDrainTick
+	warpDrainTick = 5 * time.Millisecond
+	defer func() { warpDrainTick = saved }()
+	router := newHealthTestRouter(t)
+	old := newFakeTunnel("8.6.112.10:2408")
+	replacement := newFakeTunnel("162.159.192.7:500")
+	client, server := net.Pipe()
+	defer server.Close()
+	connection := old.tunnel.conns.wrap(client)
+	router.warp = old.tunnel
+
+	if !router.adoptWarpUpgrade(old.tunnel, replacement.tunnel, nil) {
+		t.Fatal("upgrade not adopted")
+	}
+	router.warpMutex.Lock()
+	live, draining := router.warp, router.warpDraining
+	router.warpMutex.Unlock()
+	if live != replacement.tunnel || draining != old.tunnel || old.closed.Load() != 0 {
+		t.Fatalf("live=%v draining=%v closed=%d; want the old tunnel draining", live, draining, old.closed.Load())
+	}
+	_ = connection.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for old.closed.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if old.closed.Load() != 1 {
+		t.Fatal("drained tunnel not closed after its last connection")
+	}
+}

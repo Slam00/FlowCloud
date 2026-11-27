@@ -378,14 +378,6 @@ func (r *flowRouter) upgradeWarp(parent context.Context, current *warpTunnel) {
 		flowRouterLogf("WARP upgrade: %v; keeping %s", err, current.endpoint)
 		return
 	}
-	r.warpMutex.Lock()
-	if r.warp != current || r.context.Err() != nil {
-		r.warpMutex.Unlock()
-		tunnel.close()
-		return
-	}
-	found = true
-	r.warp = tunnel
 	// The round stopped at the first ideal pair, so tunnel.backups is
 	// usually empty, and backup checks wait while the old tunnel drains:
 	// the other pairs that passed and the old backups stand in.
@@ -395,11 +387,36 @@ func (r *flowRouter) upgradeWarp(parent context.Context, current *warpTunnel) {
 			passed = append(passed, evaluation)
 		}
 	}
+	found = r.adoptWarpUpgrade(current, tunnel, passed)
+}
+
+// adoptWarpUpgrade makes tunnel the live one in place of current and lets
+// current drain. Two MASQUE tunnels share the one MASQUE device, which
+// Cloudflare may keep a single session for, so a MASQUE tunnel replaced by
+// another is closed at once, as before 0.2.36 (apps reconnect).
+func (r *flowRouter) adoptWarpUpgrade(current, tunnel *warpTunnel, passed []warpEvaluation) bool {
+	r.warpMutex.Lock()
+	if r.warp != current || r.context.Err() != nil {
+		r.warpMutex.Unlock()
+		tunnel.close()
+		return false
+	}
+	drain := !(current.candidate.transport.isMasque() && tunnel.candidate.transport.isMasque())
+	r.warp = tunnel
 	r.warpBackups = mergeWarpBackups(tunnel.candidate, tunnel.backups, passed, r.warpBackups)
 	r.warpSwapped = !r.warpSwapped
-	r.warpDraining = current
+	if drain {
+		r.warpDraining = current
+	}
 	r.warpDialFailures = 0
 	r.warpMutex.Unlock()
+	if !drain {
+		closed := current.conns.closeAll()
+		current.close()
+		flowRouterLogf("WARP upgrade: %s -> %s (exit %s); closed %d connections of the old MASQUE tunnel (one MASQUE device)",
+			current.endpoint, tunnel.endpoint, orDash(tunnel.colo), closed)
+		return true
+	}
 	flowRouterLogf("WARP upgrade: %s -> %s (exit %s); %d connections finish on the old tunnel",
 		current.endpoint, tunnel.endpoint, orDash(tunnel.colo), current.conns.count())
 	r.wait.Add(1)
@@ -407,6 +424,7 @@ func (r *flowRouter) upgradeWarp(parent context.Context, current *warpTunnel) {
 		defer r.wait.Done()
 		r.drainWarp(current)
 	}()
+	return true
 }
 
 // stallDetector watches a tunnel's byte counters.
